@@ -3,11 +3,13 @@ from typing import List, BinaryIO
 from io import BytesIO
 
 from base import Box  # Import the base Box class
-from heic_types import ItemLocationBox
+from heic_types import ItemLocationBox, PrimaryItemBox, ItemInfoBox
 
 # The factory map remains here
 BOX_TYPE_MAP = {
     'iloc': ItemLocationBox,
+    'pitm': PrimaryItemBox, 
+    'iinf': ItemInfoBox,
 }
 
 CONTAINER_BOXES = {'meta', 'moov', 'trak', 'iprp', 'ipco', 'dinf', 'fiinf', 'ipro'}

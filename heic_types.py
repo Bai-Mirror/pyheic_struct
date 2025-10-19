@@ -45,3 +45,53 @@ class ItemLocationBox(Box):
         if size == 4: return struct.unpack('>I', data[pos:pos+4])[0]
         if size == 8: return struct.unpack('>Q', data[pos:pos+8])[0]
         return 0
+
+class ItemInfoEntry:
+    """A data class for one item described in an 'iinf' box."""
+    def __init__(self, item_id, item_type, item_name):
+        self.item_id = item_id
+        self.type = item_type
+        self.name = item_name
+
+    def __repr__(self):
+        return f"<ItemInfoEntry ID={self.item_id} type='{self.type}' name='{self.name}'>"
+
+class ItemInfoBox(Box):
+    """
+    A specialized class for the 'iinf' box.
+    Parses its own data to build a list of all available items.
+    """
+    def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
+        super().__init__(size, box_type, offset, raw_data)
+        
+        self.entries: list[ItemInfoEntry] = []
+        self._parse_entries()
+
+    def _parse_entries(self):
+        # 'iinf' is a FullBox, so the first 4 bytes are version/flags
+        item_count = struct.unpack('>H', self.raw_data[4:6])[0]
+        
+        # The children are 'infe' boxes, which are parsed by the generic parser
+        for infe_box in self.children:
+            if infe_box.type == 'infe':
+                # 'infe' is a FullBox (version, flags)
+                # version = infe_box.raw_data[0]
+                item_id = struct.unpack('>H', infe_box.raw_data[4:6])[0]
+                item_type = infe_box.raw_data[8:12].decode('ascii').strip('\x00')
+                item_name_bytes = infe_box.raw_data[12:]
+                item_name = item_name_bytes.decode('utf-8', errors='ignore').strip('\x00')
+                self.entries.append(ItemInfoEntry(item_id, item_type, item_name))
+
+class PrimaryItemBox(Box):
+    """
+    A specialized class for the 'pitm' box.
+    """
+    def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
+        super().__init__(size, box_type, offset, raw_data)
+        
+        self.item_id: int = 0
+        self._parse_item_id()
+
+    def _parse_item_id(self):
+        # 'pitm' is a FullBox (version, flags)
+        self.item_id = struct.unpack('>H', self.raw_data[4:6])[0]

@@ -2,6 +2,7 @@ import os
 from base import Box
 from parser import parse_boxes
 from heic_types import ItemLocationBox
+from heic_types import ItemLocationBox, PrimaryItemBox, ItemInfoBox
 
 # Import handlers
 from handlers.base_handler import VendorHandler
@@ -13,6 +14,8 @@ class HEICFile:
         self.filepath = filepath
         self._iloc_box: ItemLocationBox = None
         self._ftyp_box: Box = None
+        self._iinf_box: ItemInfoBox = None    # <-- Add this line
+        self._pitm_box: PrimaryItemBox = None
         self.handler: VendorHandler = None # Will hold our strategy object
 
         with open(self.filepath, 'rb') as f:
@@ -27,7 +30,24 @@ class HEICFile:
         for box in boxes:
             if box.type == 'iloc': self._iloc_box = box
             if box.type == 'ftyp': self._ftyp_box = box
+            if box.type == 'iinf': self._iinf_box = box # <-- Add this line
+            if box.type == 'pitm': self._pitm_box = box
             if box.children: self._find_essential_boxes(box.children)
+    
+    def get_primary_item_id(self) -> int | None:
+        if not self._pitm_box:
+            print("Warning: 'pitm' box not found. Cannot determine primary item.")
+            return None
+        return self._pitm_box.item_id
+    
+    def list_items(self):
+        if not self._iinf_box:
+            print("Warning: 'iinf' box not found. Cannot list items.")
+            return
+        
+        print("Available items in HEIC file:")
+        for entry in self._iinf_box.entries:
+            print(f"  - {entry}")
 
     def _detect_vendor(self):
         """
