@@ -1,4 +1,3 @@
-# In heic_types.py
 import struct
 from base import Box  # <-- THIS IS THE KEY CHANGE
 
@@ -29,7 +28,7 @@ class ItemLocationBox(Box):
         current_pos = 8
         for _ in range(item_count):
             item_id = struct.unpack('>H', stream[current_pos : current_pos+2])[0]
-            current_pos += 4 # Skip item_id and construction_method
+            current_pos += 2 # Skip construction_method
             current_pos += 2 # Skip data_reference_index
             current_pos += base_offset_size
             extent_count = struct.unpack('>H', stream[current_pos : current_pos+2])[0]

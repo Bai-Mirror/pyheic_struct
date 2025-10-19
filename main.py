@@ -1,44 +1,27 @@
-from base import Box
-from parser import parse_boxes
-from heic_types import ItemLocationBox
-from typing import List
-import os
-
-def print_box_tree(boxes: List[Box], indent: int = 0):
-    for box in boxes:
-        print("  " * indent + str(box))
-        
-        if isinstance(box, ItemLocationBox):
-            for loc in box.locations[:5]:
-                print("  " * (indent + 1) + str(loc))
-            if len(box.locations) > 5:
-                print("  " * (indent + 1) + f"... and {len(box.locations) - 5} more locations")
-
-        if box.children:
-            print_box_tree(box.children, indent + 1)
+from heic_file import HEICFile
 
 def main():
-    # Test with the Apple HEIC file
-    print("--- Analyzing Apple HEIC file ---")
-    try:
-        with open('apple.heic', 'rb') as f:
-            file_size = os.fstat(f.fileno()).st_size
-            top_level_boxes = parse_boxes(f, file_size)
-            print_box_tree(top_level_boxes)
-    except FileNotFoundError:
-        print("Error: apple.heic not found.")
+    print("--- Processing Samsung HEIC file ---")
+    samsung_heic = HEICFile('samsung.heic')
+    samsung_video_data = samsung_heic.get_motion_photo_data()
     
+    if samsung_video_data:
+        output_filename = 'samsung_motion_photo.mp4'
+        with open(output_filename, 'wb') as f:
+            f.write(samsung_video_data)
+        print(f"Successfully extracted motion photo to '{output_filename}' ({len(samsung_video_data)} bytes)")
+
     print("\n" + "="*40 + "\n")
 
-    # Test with the Samsung HEIC file
-    print("--- Analyzing Samsung HEIC file ---")
-    try:
-        with open('samsung.heic', 'rb') as f:
-            file_size = os.fstat(f.fileno()).st_size
-            top_level_boxes = parse_boxes(f, file_size)
-            print_box_tree(top_level_boxes)
-    except FileNotFoundError:
-        print("Error: samsung.heic not found.")
+    print("--- Processing Apple HEIC file ---")
+    apple_heic = HEICFile('apple.heic')
+    apple_video_data = apple_heic.get_motion_photo_data()
+
+    if apple_video_data:
+        # This block should not be reached for Apple files
+        print("Extracted embedded video from Apple file (this is unexpected).")
+    else:
+        print("No embedded motion photo found in Apple file, as expected.")
 
 
 if __name__ == "__main__":
