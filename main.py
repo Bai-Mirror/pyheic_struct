@@ -1,13 +1,30 @@
+from base import Box
 from parser import parse_boxes
+from heic_types import ItemLocationBox
+from typing import List
+import os
+
+def print_box_tree(boxes: List[Box], indent: int = 0):
+    for box in boxes:
+        print("  " * indent + str(box))
+        
+        if isinstance(box, ItemLocationBox):
+            for loc in box.locations[:5]:
+                print("  " * (indent + 1) + str(loc))
+            if len(box.locations) > 5:
+                print("  " * (indent + 1) + f"... and {len(box.locations) - 5} more locations")
+
+        if box.children:
+            print_box_tree(box.children, indent + 1)
 
 def main():
     # Test with the Apple HEIC file
     print("--- Analyzing Apple HEIC file ---")
     try:
         with open('apple.heic', 'rb') as f:
-            top_level_boxes = parse_boxes(f)
-            for box in top_level_boxes:
-                print(box)
+            file_size = os.fstat(f.fileno()).st_size
+            top_level_boxes = parse_boxes(f, file_size)
+            print_box_tree(top_level_boxes)
     except FileNotFoundError:
         print("Error: apple.heic not found.")
     
@@ -17,9 +34,9 @@ def main():
     print("--- Analyzing Samsung HEIC file ---")
     try:
         with open('samsung.heic', 'rb') as f:
-            top_level_boxes = parse_boxes(f)
-            for box in top_level_boxes:
-                print(box)
+            file_size = os.fstat(f.fileno()).st_size
+            top_level_boxes = parse_boxes(f, file_size)
+            print_box_tree(top_level_boxes)
     except FileNotFoundError:
         print("Error: samsung.heic not found.")
 
