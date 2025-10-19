@@ -2,19 +2,29 @@ import struct
 from typing import List, BinaryIO
 from io import BytesIO
 
-from base import Box  # Import the base Box class
-from heic_types import ItemLocationBox, PrimaryItemBox, ItemInfoBox
+from base import Box
+from heic_types import (
+    ItemLocationBox, PrimaryItemBox, ItemInfoBox, ItemPropertiesBox,
+    ItemPropertyContainerBox, ItemPropertyAssociationBox, ImageSpatialExtentsBox
+)
 
-# The factory map remains here
+# The factory map remains the same
 BOX_TYPE_MAP = {
     'iloc': ItemLocationBox,
-    'pitm': PrimaryItemBox, 
+    'pitm': PrimaryItemBox,
     'iinf': ItemInfoBox,
+    'iprp': ItemPropertiesBox,
+    'ipco': ItemPropertyContainerBox,
+    'ipma': ItemPropertyAssociationBox,
+    'ispe': ImageSpatialExtentsBox,
 }
 
-CONTAINER_BOXES = {'meta', 'moov', 'trak', 'iprp', 'ipco', 'dinf', 'fiinf', 'ipro'}
-FULL_BOXES = {'meta', 'hdlr', 'pitm', 'iinf', 'iloc'}
+# --- FIX: Add 'iinf' to CONTAINER_BOXES ---
+# 'iinf' is a container for 'infe' boxes, so it needs to be parsed recursively.
+CONTAINER_BOXES = {'meta', 'moov', 'trak', 'iprp', 'ipco', 'dinf', 'fiinf', 'ipro', 'iinf'}
+FULL_BOXES = {'meta', 'hdlr', 'pitm', 'iinf', 'iloc', 'ipma', 'ispe'}
 
+# The parse_boxes function remains completely unchanged
 def parse_boxes(stream: BinaryIO, max_size: int) -> List[Box]:
     """
     Parses boxes from a file stream up to a maximum size.
@@ -49,11 +59,9 @@ def parse_boxes(stream: BinaryIO, max_size: int) -> List[Box]:
         raw_data = stream.read(content_size)
         if len(raw_data) < content_size: break
 
-        # --- Factory Pattern ---
         box_class = BOX_TYPE_MAP.get(box_type, Box)
         box = box_class(size, box_type, current_offset_in_stream, raw_data)
 
-        # --- NEW: Recursive parsing logic moved here ---
         if box.type in CONTAINER_BOXES:
             child_stream = BytesIO(box.raw_data)
             parse_size = len(box.raw_data)
@@ -61,7 +69,6 @@ def parse_boxes(stream: BinaryIO, max_size: int) -> List[Box]:
                 child_stream.read(4) # Skip version/flags
                 parse_size -= 4
             box.children = parse_boxes(child_stream, parse_size)
-        # --- End of new logic ---
 
         boxes.append(box)
         stream.seek(current_offset_in_stream + size)

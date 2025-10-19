@@ -13,3 +13,7 @@ class Box:
 
     def __repr__(self) -> str:
         return f"<Box '{self.type}' size={self.size} offset={self.offset}>"
+        
+    def _post_parse_initialization(self):
+        """Called by the parser after children have been assigned."""
+        pass
