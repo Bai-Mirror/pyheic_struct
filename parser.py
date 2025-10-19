@@ -5,10 +5,10 @@ from io import BytesIO
 from base import Box
 from heic_types import (
     ItemLocationBox, PrimaryItemBox, ItemInfoBox, ItemPropertiesBox,
-    ItemPropertyContainerBox, ItemPropertyAssociationBox, ImageSpatialExtentsBox
+    ItemPropertyContainerBox, ItemPropertyAssociationBox, ImageSpatialExtentsBox,
+    ItemReferenceBox # <-- Import the new class
 )
 
-# The factory map remains the same
 BOX_TYPE_MAP = {
     'iloc': ItemLocationBox,
     'pitm': PrimaryItemBox,
@@ -17,14 +17,13 @@ BOX_TYPE_MAP = {
     'ipco': ItemPropertyContainerBox,
     'ipma': ItemPropertyAssociationBox,
     'ispe': ImageSpatialExtentsBox,
+    'iref': ItemReferenceBox, # <-- Register the new class
 }
 
-# --- FIX: Add 'iinf' to CONTAINER_BOXES ---
-# 'iinf' is a container for 'infe' boxes, so it needs to be parsed recursively.
-CONTAINER_BOXES = {'meta', 'moov', 'trak', 'iprp', 'ipco', 'dinf', 'fiinf', 'ipro', 'iinf'}
-FULL_BOXES = {'meta', 'hdlr', 'pitm', 'iinf', 'iloc', 'ipma', 'ispe'}
+# 'iref' is also a container.
+CONTAINER_BOXES = {'meta', 'moov', 'trak', 'iprp', 'ipco', 'dinf', 'fiinf', 'ipro', 'iinf', 'iref'}
+FULL_BOXES = {'meta', 'hdlr', 'pitm', 'iinf', 'iloc', 'ipma', 'ispe', 'iref'}
 
-# The parse_boxes function remains completely unchanged
 def parse_boxes(stream: BinaryIO, max_size: int) -> List[Box]:
     """
     Parses boxes from a file stream up to a maximum size.
@@ -66,7 +65,8 @@ def parse_boxes(stream: BinaryIO, max_size: int) -> List[Box]:
             child_stream = BytesIO(box.raw_data)
             parse_size = len(box.raw_data)
             if box.type in FULL_BOXES:
-                child_stream.read(4) # Skip version/flags
+                # Skip version/flags from the beginning of the raw_data
+                child_stream.read(4)
                 parse_size -= 4
             box.children = parse_boxes(child_stream, parse_size)
 

@@ -5,7 +5,7 @@ from base import Box
 from parser import parse_boxes
 from heic_types import (
     ItemLocationBox, PrimaryItemBox, ItemInfoBox, ItemPropertiesBox,
-    ImageSpatialExtentsBox
+    ImageSpatialExtentsBox, ItemReferenceBox # <-- Import the new class
 )
 
 from handlers.base_handler import VendorHandler
@@ -20,6 +20,7 @@ class HEICFile:
         self._iinf_box: ItemInfoBox | None = None
         self._pitm_box: PrimaryItemBox | None = None
         self._iprp_box: ItemPropertiesBox | None = None
+        self._iref_box: ItemReferenceBox | None = None # <-- Add new instance variable
         self.handler: VendorHandler | None = None
 
         with open(self.filepath, 'rb') as f:
@@ -28,7 +29,6 @@ class HEICFile:
             self._find_essential_boxes(self.boxes)
             self._detect_vendor()
 
-    # --- FIX: Changed 'elif' to separate 'if' statements for robustness ---
     def _find_essential_boxes(self, boxes: list[Box]):
         """Recursively search for essential boxes."""
         for box in boxes:
@@ -40,13 +40,37 @@ class HEICFile:
                 self._pitm_box = box
             if isinstance(box, ItemPropertiesBox):
                 self._iprp_box = box
+            if isinstance(box, ItemReferenceBox): # <-- Find and store the 'iref' box
+                self._iref_box = box
             if box.type == 'ftyp':
                 self._ftyp_box = box
 
             if box.children:
                 self._find_essential_boxes(box.children)
 
-    # All other methods remain unchanged
+    # --- NEW Method for Task 3.2 ---
+    def get_grid_layout(self) -> list[int] | None:
+        """
+        Uses 'iref' and 'pitm' to find the tile IDs for the primary grid image.
+        Returns a list of item IDs that make up the grid.
+        """
+        primary_id = self.get_primary_item_id()
+        if not primary_id:
+            return None
+
+        if not self._iref_box:
+            print("Warning: 'iref' box not found. Cannot determine grid layout.")
+            return None
+        
+        # Find the reference entry that originates from the primary item ID
+        grid_tile_ids = self._iref_box.references.get(primary_id)
+
+        if not grid_tile_ids:
+            print(f"Warning: No grid reference found for primary item ID {primary_id}.")
+            return None
+
+        return grid_tile_ids
+
     def get_image_size(self, item_id: int) -> tuple[int, int] | None:
         """
         Gets the width and height of a given image item ID.
@@ -62,8 +86,8 @@ class HEICFile:
         item_associations = self._iprp_box.ipma.entries[item_id].associations
 
         for assoc in item_associations:
-            property_index = assoc - 1
-            if property_index < len(self._iprp_box.ipco.children):
+            property_index = assoc - 1 # Property indices are 1-based
+            if 0 <= property_index < len(self._iprp_box.ipco.children):
                 prop = self._iprp_box.ipco.children[property_index]
                 if isinstance(prop, ImageSpatialExtentsBox):
                     return (prop.image_width, prop.image_height)
@@ -96,7 +120,6 @@ class HEICFile:
                  self.handler = AppleHandler()
                  return
         
-        print("Could not detect a specific vendor. Using default handler.")
         self.handler = VendorHandler()
 
     def get_item_data(self, item_id: int) -> bytes | None:
@@ -119,5 +142,7 @@ class HEICFile:
         if offset is not None:
             with open(self.filepath, 'rb') as f:
                 f.seek(offset)
+                # The actual video data could be the rest of the file or a specific length
+                # For now, we assume it's a reasonable chunk.
                 return f.read()
         return None
