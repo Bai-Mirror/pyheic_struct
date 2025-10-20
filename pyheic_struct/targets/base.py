@@ -15,7 +15,12 @@ class TargetAdapter(ABC):
 
     name: str = "generic"
 
-    def apply_to_flat_heic(self, flat_heic: HEICFile, content_id: str) -> None:
+    def apply_to_flat_heic(
+        self,
+        flat_heic: HEICFile,
+        content_id: str,
+        photo_id: str | None = None,
+    ) -> None:
         """
         在最终写出前，针对目标生态对 HEIC 做品牌/元数据调整。
         """

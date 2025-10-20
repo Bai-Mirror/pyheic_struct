@@ -2,14 +2,21 @@ import os
 import math
 import pillow_heif
 from dataclasses import dataclass
+from typing import Optional
 from PIL import Image
 
 from .base import Box
 from .parser import parse_boxes
 from .heic_types import (
-    ItemLocationBox, PrimaryItemBox, ItemInfoBox, ItemPropertiesBox,
-    ImageSpatialExtentsBox, ItemReferenceBox, ItemInfoEntryBox,
-    _read_int
+    ItemLocationBox,
+    PrimaryItemBox,
+    ItemInfoBox,
+    ItemPropertiesBox,
+    ImageSpatialExtentsBox,
+    ItemReferenceBox,
+    ItemInfoEntryBox,
+    ItemLocation,
+    _read_int,
 )
 from .handlers import VendorHandler, resolve_handler
 
@@ -285,6 +292,177 @@ class HEICFile:
                     
         print(f"Error: Logic failed to find 'infe' box for target ID {target_id} even after check.")
         return False
+
+    @staticmethod
+    def _normalize_item_id(raw_item_id: int) -> int:
+        """
+        Samsung/other vendors may left-shift item IDs by 16 bits inside `iinf`.
+        Normalize such IDs back to their canonical value.
+        """
+        return raw_item_id >> 16 if raw_item_id > 0xFFFF else raw_item_id
+
+    def _find_item_id_by_type(self, item_type: str) -> Optional[int]:
+        """Return the canonical item ID for the first entry whose type matches."""
+        if not self._iinf_box:
+            return None
+
+        normalized = item_type.lower()
+        for entry in self._iinf_box.entries:
+            entry_type = getattr(entry, "type", "") or ""
+            if entry_type.lower() == normalized:
+                return self._normalize_item_id(entry.item_id)
+        return None
+
+    def _get_item_location(self, item_id: int) -> Optional[ItemLocation]:
+        """Fetch the `iloc` entry describing where the item lives inside the file."""
+        if not self._iloc_box:
+            return None
+        for loc in self._iloc_box.locations:
+            if loc.item_id == item_id:
+                return loc
+        return None
+
+    def _read_item_bytes(self, item_id: int) -> bytes:
+        """
+        Read raw bytes for an item that is stored directly inside `mdat`.
+        Currently limited to single-extent entries using construction method 0.
+        """
+        mdat_box = self.get_mdat_box()
+        if not mdat_box:
+            raise RuntimeError("Cannot read item data: 'mdat' box not available.")
+
+        loc = self._get_item_location(item_id)
+        if not loc or not loc.extents:
+            raise RuntimeError(f"Cannot locate item data for ID {item_id}.")
+        if loc.construction_method not in (0, None):
+            raise NotImplementedError(
+                "Reading items stored outside 'mdat' is not implemented."
+            )
+        if len(loc.extents) != 1:
+            raise NotImplementedError("Only single-extent items are supported.")
+
+        offset, length = loc.extents[0]
+        mdat_data_start = mdat_box.offset + 8
+        relative_start = offset - mdat_data_start
+        if relative_start < 0 or relative_start + length > len(mdat_box.raw_data):
+            raise RuntimeError("Calculated item bounds fall outside the 'mdat' payload.")
+
+        return bytes(mdat_box.raw_data[relative_start : relative_start + length])
+
+    def _write_item_bytes(self, item_id: int, new_payload: bytes) -> None:
+        """
+        Replace the bytes of an item stored inside `mdat`, shifting subsequent data
+        and updating `iloc` bookkeeping as needed.
+        """
+        mdat_box = self.get_mdat_box()
+        if not mdat_box:
+            raise RuntimeError("Cannot write item data: 'mdat' box not available.")
+
+        loc = self._get_item_location(item_id)
+        if not loc or not loc.extents:
+            raise RuntimeError(f"Cannot locate item data for ID {item_id}.")
+        if loc.construction_method not in (0, None):
+            raise NotImplementedError(
+                "Writing items stored outside 'mdat' is not implemented."
+            )
+        if len(loc.extents) != 1:
+            raise NotImplementedError("Only single-extent items are supported.")
+
+        offset, old_length = loc.extents[0]
+        base_offset = loc.base_offset
+        old_end = offset + old_length
+        delta = len(new_payload) - old_length
+
+        mdat_data_start = mdat_box.offset + 8
+        relative_start = offset - mdat_data_start
+        relative_end = relative_start + old_length
+
+        if relative_start < 0 or relative_end > len(mdat_box.raw_data):
+            raise RuntimeError("Calculated item bounds fall outside the 'mdat' payload.")
+
+        updated_payload = bytearray(mdat_box.raw_data)
+        updated_payload[relative_start:relative_end] = new_payload
+        mdat_box.raw_data = bytes(updated_payload)
+        mdat_box.size = 8 + len(mdat_box.raw_data)
+
+        loc.extents = [(offset, len(new_payload))]
+        loc.raw_extents = [(offset - base_offset, len(new_payload))]
+
+        if delta == 0:
+            return
+
+        # Shift subsequent mdat-backed items so their offsets stay accurate.
+        for other in self._iloc_box.locations if self._iloc_box else []:
+            if other is loc or other.construction_method not in (0, None):
+                continue
+
+            original_base = other.base_offset
+            adjusted_base = original_base
+            if original_base >= old_end:
+                adjusted_base = original_base + delta
+
+            new_extents = []
+            new_raw_extents = []
+
+            for rel_offset, length in other.raw_extents:
+                absolute_offset = original_base + rel_offset
+                if absolute_offset >= old_end:
+                    absolute_offset += delta
+                new_extents.append((absolute_offset, length))
+                new_raw_extents.append((absolute_offset - adjusted_base, length))
+
+            other.base_offset = adjusted_base
+            other.extents = new_extents
+            other.raw_extents = new_raw_extents
+
+    def set_exif_maker_note(self, maker_note_payload: bytes) -> None:
+        """
+        Inject (or replace) the Apple MakerNote blob inside the Exif item.
+        """
+        try:
+            import piexif
+        except ModuleNotFoundError as exc:  # pragma: no cover - defensive
+            raise RuntimeError(
+                "piexif is required to manipulate Exif metadata. "
+                "Install the optional dependency via 'pip install piexif'."
+            ) from exc
+
+        exif_item_id = self._find_item_id_by_type("Exif")
+        if exif_item_id is None:
+            raise RuntimeError(
+                "Temporary HEIC file does not contain an Exif item; "
+                "cannot embed Apple MakerNote metadata."
+            )
+
+        exif_bytes = self._read_item_bytes(exif_item_id)
+        exif_prefix = b""
+        if exif_bytes.startswith(b"\x00\x00\x00\x06Exif"):
+            exif_prefix = exif_bytes[:4]
+            exif_bytes = exif_bytes[4:]
+
+        load_attempts = [
+            bytearray(exif_bytes),
+        ]
+        if not exif_bytes.startswith((b"Exif", b"II", b"MM")):
+            load_attempts.append(bytearray(b"Exif\x00\x00" + exif_bytes))
+
+        exif_dict = None
+        for candidate in load_attempts:
+            try:
+                exif_dict = piexif.load(candidate)
+                break
+            except Exception:
+                continue
+
+        if exif_dict is None:
+            raise RuntimeError("Failed to parse existing Exif payload for MakerNote injection.")
+        exif_section = exif_dict.setdefault("Exif", {})
+        exif_section[piexif.ExifIFD.MakerNote] = maker_note_payload
+
+        new_exif_bytes = piexif.dump(exif_dict)
+        if exif_prefix:
+            new_exif_bytes = exif_prefix + new_exif_bytes
+        self._write_item_bytes(exif_item_id, new_exif_bytes)
 
     def reconstruct_primary_image(self) -> Image.Image | None:
         """Reconstruct the primary image using pillow-heif (handles grid tiles)."""

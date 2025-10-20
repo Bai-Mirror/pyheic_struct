@@ -1,0 +1,2 @@
+[console_scripts]
+pyheic-struct = pyheic_struct.cli:main

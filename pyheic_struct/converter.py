@@ -115,7 +115,9 @@ def convert_motion_photo(
         raise RuntimeError("Failed to reconstruct primary image using pillow-heif.")
 
     new_content_id = str(uuid.uuid4()).upper()
+    photo_identifier = str(uuid.uuid4()).upper()
     print(f"Generated ContentIdentifier: {new_content_id}")
+    print(f"Generated PhotoIdentifier:   {photo_identifier}")
 
     mov_path: Optional[Path]
     if video_data:
@@ -157,7 +159,11 @@ def convert_motion_photo(
             target_adapter=target_adapter,
         )
 
-        target_adapter.apply_to_flat_heic(flat_heic_file, new_content_id)
+        target_adapter.apply_to_flat_heic(
+            flat_heic_file,
+            new_content_id,
+            photo_identifier,
+        )
 
         print("Rebuilding flat HEIC with new metadata...")
         builder = HEICBuilder(flat_heic_file)

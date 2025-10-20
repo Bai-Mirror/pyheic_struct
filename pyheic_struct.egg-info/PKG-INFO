@@ -1,0 +1,210 @@
+Metadata-Version: 2.4
+Name: pyheic-struct
+Version: 0.1.0
+Summary: Low-level utilities for parsing and rebuilding HEIC/HEIF files, with Samsung-to-Apple motion photo conversion helpers.
+Author-email: Nymiro Yi <dmwf994@dmwf994.com>
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: Pillow>=10.0.0
+Requires-Dist: pillow-heif>=0.15.0
+Provides-Extra: full
+Requires-Dist: exiftool-wrapper>=0.5.0; extra == "full"
+
+# pyheic-struct
+
+`pyheic-struct` 是一个专注于 HEIF/HEIC 结构化解析、诊断与重建的 Python 工具包。项目在三星动态照片（Motion Photo）与苹果生态兼容场景下积累了大量经验，既提供一键式的命令行转换，也暴露底层 API 便于集成到自定义流程中。
+
+## 为什么选择 pyheic-struct？
+
+- **跨厂商兼容痛点**：三星 HEIC 使用网格化主图和自定义 `mpvd` 盒，苹果设备无法直接识别。工具对这些差异做了完整抽象。
+- **低层结构可视化**：快速读取 `ftyp`、`meta`、`iloc`、`iinf`、`iprp`、`iref` 等关键盒，辅助调试偏移量与引用关系。
+- **安全重建**：`HEICBuilder` 会自动重新计算偏移和引用，避免手工修改导致的文件损坏。
+- **CLI + API 双入口**：既可以在命令行完成日常迁移，也能以库的方式嵌入流水线或 GUI 工具。
+- **附带样例资源**：仓库内置多个真实 HEIC/MOV 用例，方便对照分析与学习。
+
+## 功能总览
+
+- **结构解析**：`HEICFile` 提供盒树访问、主图 ID 查询、属性映射 (`ipma`) 等能力。
+- **网格图像重组**：借助 `pillow-heif` 还原三星的网格化主图，生成平面图像。
+- **Motion Photo 拆分**：自动提取嵌入的 MOV 数据并重新生成苹果兼容格式。
+- **元数据校正**：修复三星专用的 “shifted ID” 现象，补齐苹果生态所需的 `ContentIdentifier`。
+- **命令行转换**：`pyheic-struct` CLI 一键完成转换、打标签与临时文件清理。
+
+## 基础概念速览
+
+- **HEIF/HEIC**：高效图像容器格式，内部使用多层 Box 结构存储图像、元数据和引用。
+- **Motion Photo**：静态图像与短视频打包的格式，三星与苹果在容器层实现差异较大。
+- **ContentIdentifier**：苹果生态用于绑定 HEIC 主图和 MOV 视频的元数据键值。
+
+## 环境要求
+
+- Python 3.10+
+- 必装依赖：`Pillow>=10.0.0`, `pillow-heif>=0.15.0`
+- 可选依赖：`exiftool-wrapper>=0.5.0`（当需要自动写入 MOV 的 `ContentIdentifier` 时调用外部 `exiftool`）
+- 可执行的 `exiftool`（推荐，但非必须）
+  - macOS: `brew install exiftool`
+  - Ubuntu/Debian: `sudo apt install libimage-exiftool-perl`
+  - Windows: 安装 [ExifTool for Windows](https://exiftool.org/) 并将可执行文件加入 `PATH`
+
+## 安装
+
+仓库当前以源码分发为主，可按需选择以下方式：
+
+```bash
+# 方式一：直接在仓库根目录安装
+pip install .
+
+# 方式二：开发模式安装（便于调试）
+pip install -e .[full]
+```
+
+若只需要解析功能，可省略 `.[full]`；如果计划写入 `ContentIdentifier`，请启用 `full` 额外安装 `exiftool-wrapper`。
+
+## 快速上手
+
+### 样例数据
+
+仓库附带若干示例：
+
+- `samsung.heic`：原始三星 Motion Photo
+- `samsung_apple_compatible.HEIC` / `.MOV`：转换后的示例输出
+- `apple.HEIC`：苹果原生样例
+
+可以使用它们验证流程或对比结构差异。
+
+### 命令行转换
+
+```bash
+pyheic-struct samsung.heic \
+  --output-heic samsung_fixed.HEIC \
+  --output-mov samsung_fixed.MOV
+```
+
+参数说明：
+
+| 参数 | 说明 |
+| ---- | ---- |
+| `source` | 必选，原始三星 HEIC 路径 |
+| `--output-heic` | 可选，输出 HEIC 路径，默认 `<source>_apple_compatible.HEIC` |
+| `--output-mov` | 可选，输出 MOV 路径，默认 `<source>_apple_compatible.MOV` |
+| `--skip-mov-tag` | 跳过为 MOV 写入 `ContentIdentifier`（无 `exiftool` 时可用） |
+
+命令执行时会打印重建流程的关键日志，包括网格合成、ID 校正、临时文件清理等，出现异常时可直接复制日志用于排查。
+
+### 作为库调用
+
+```python
+from pathlib import Path
+
+from pyheic_struct import HEICFile, HEICBuilder, convert_samsung_motion_photo
+
+# 1. 解析结构
+heic = HEICFile("samsung.heic")
+print("主图 Item ID:", heic.get_primary_item_id())
+print("所有条目:", list(heic.iter_items()))
+
+# 2. 自定义转换（可覆盖默认输出路径）
+heic_path, mov_path = convert_samsung_motion_photo(
+    "samsung.heic",
+    output_still=Path("converted/heic/apple_ready.HEIC"),
+    output_video=Path("converted/video/apple_ready.MOV"),
+)
+
+# 3. 进一步加工：加载新的 HEIC 并注入其他元数据
+rebuilt = HEICFile(str(heic_path))
+rebuilt.set_content_identifier("INTERNAL-CONTENT-ID")
+HEICBuilder(rebuilt).write("converted/heic/with_custom_id.HEIC")
+```
+
+### 独立转换脚本
+
+仓库提供 `scripts/samsung_live_photo.py`，用于在终端中直接生成苹果 Live Photo：
+
+```bash
+python3 scripts/samsung_live_photo.py samsung.heic --output-dir output/live
+```
+
+脚本默认会为 HEIC 与 MOV 写入同一个 `ContentIdentifier`（依赖系统 `exiftool`）。若暂时无法安装，可附加 `--skip-mov-tag` 跳过 MOV 注入。
+
+### 结构巡检脚本
+
+`inspect_heic.py` 为常用的调试脚本，可快速查看盒结构、偏移和 Vendor 信息：
+
+```bash
+python inspect_heic.py samsung_apple_compatible.HEIC
+```
+
+输出包含 `ftyp`、`iloc`、`ipma`、`mpvd` 等关键节点，便于手动验证转换是否成功。
+
+## Motion Photo 转换流程解读
+
+1. **载入原始 HEIC**：定位 `ftyp`、`meta`、`iloc` 等盒；若未自动识别厂商，会尝试查找三星专有的 `mpvd` 盒。
+2. **主图重构**：从三星的网格化结构还原单张平面图像，并以临时 HEIC（`mif1` 品牌）写入。
+3. **视频提取**：若存在 Motion Photo 数据，则写出 MOV；在具备 `exiftool` 时写入 `ContentIdentifier`。
+4. **ID 校正**：处理三星在 `iinf`、`ipma`、`iref` 等盒中的 “shifted ID” 现象，确保苹果解析器能正确关联。
+5. **元数据注入**：更新 `ftyp` 兼容字符串、写入新的 `ContentIdentifier`，必要时可自定义。
+6. **最终重建**：`HEICBuilder` 重新计算每个盒的偏移和长度，生成干净的苹果兼容 HEIC；同时清理临时文件。
+
+理解该流程有助于调优转换策略、扩展到其他厂商或容器结构。
+
+## 主要 API 速查
+
+- `pyheic_struct.HEICFile(path)`：读取 HEIC，提供盒访问、`get_motion_photo_data()`、`reconstruct_primary_image()` 等方法。
+- `pyheic_struct.HEICBuilder(heic_file)`：将修改后的 `HEICFile` 写回磁盘，自动处理偏移修正。
+- `pyheic_struct.convert_samsung_motion_photo(...)`：高阶入口，封装完整的三星 Motion Photo 转苹果流程。
+- `pyheic_struct.handlers.*`：不同厂商的定制 Handler，可扩展以支持更多特性。
+
+- `pyheic_struct.convert_motion_photo(...)`：全新的通用转换入口，可指定 `vendor_hint` 与目标 `TargetAdapter`。
+- `pyheic_struct.AppleTargetAdapter` / `pyheic_struct.TargetAdapter`：目标生态适配器接口，默认实现负责苹果兼容。
+- `pyheic_struct.handlers.VendorHandler`：厂商扩展基类，提供 `matches`、`extract_motion_video`、`prepare_flat_heic` 等钩子。
+
+更多内部实现细节可直接阅读 `pyheic_struct/` 包目录下的源代码。
+
+## 扩展 Motion Photo 适配
+
+1. **实现厂商 Handler**：在 `pyheic_struct/handlers/` 中继承 `VendorHandler`，实现 `matches`（自动检测）、`extract_motion_video`（解析嵌入视频）与 `prepare_flat_heic`（修复偏移、元数据）等方法。
+2. **注册 Handler**：将新类加入 `HANDLER_REGISTRY`，即可参与自动检测，也可以通过 `vendor_hint="your_vendor"` 强制指定。
+3. **自定义目标适配器（可选）**：若需要输出其他生态格式，继承 `TargetAdapter`，覆盖 `apply_to_flat_heic` 和 `post_process_mov`。
+4. **运行全量转换**：调用通用 API `convert_motion_photo(..., vendor_hint="your_vendor", target_adapter=YourAdapter())` 验证流程。
+
+通过这一解耦结构，可以在不修改核心转换逻辑的情况下迭代更多厂商或目标平台的适配。
+
+## 开发与调试
+
+```bash
+# 建议使用虚拟环境
+python -m venv .venv
+source .venv/bin/activate  # Windows 用 .venv\Scripts\activate
+
+# 安装依赖
+pip install -e .[full]
+
+# 快速验证
+python -m pyheic_struct samsung.heic
+python inspect_heic.py samsung_apple_compatible.HEIC
+```
+
+其它实用脚本：
+
+- `test.py`：对生成的 HEIC 做首段十六进制检查。
+- `main.py`：演示性入口，可作为定制脚本模板。
+
+欢迎通过 Issues/PR 提交解析改进或新增厂商 Handler。
+
+## 常见问题
+
+- **提示找不到 `exiftool`**：说明环境未安装或未加入 `PATH`，可临时使用 `--skip-mov-tag` 跳过 MOV 元数据写入。
+- **转换后只有 HEIC 没有 MOV**：原始文件可能不包含 Motion Photo 数据，可借助 `inspect_heic.py` 查看是否存在 `mpvd` 盒。
+- **苹果仍无法识别**：请确认手动修改流程中是否重新执行了 `HEICBuilder.write()`，以及 `ContentIdentifier` 是否匹配 HEIC/MOV。
+- **解析非三星文件**：目前对其他厂商测试有限，解析流程通常可用，但转换逻辑需要自行验证。
+
+## 局限与后续计划
+
+- 尚未覆盖所有 HEIF 扩展盒类型，复杂属性可能需要额外支持。
+- 未提供官方测试套件，建议在生产环境前自行编写回归测试。
+- 未来计划加入对华为、小米等厂商 Motion Photo 的实验性适配。
+
+## 许可证
+
+MIT License — 可自由用于商业及非商业用途。贡献代码即视为接受该许可条款。
