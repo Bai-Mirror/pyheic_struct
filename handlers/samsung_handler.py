@@ -7,11 +7,14 @@ class SamsungHandler(VendorHandler):
         """
         Searches for the 'mpvd' box which contains the video data.
         """
-        for box in heic_file.boxes:
-            if box.type == 'mpvd':
-                print(f"Samsung 'mpvd' box found at offset {box.offset}")
-                # The video data starts right after the box header.
-                return box.offset + 8 
+        # --- START FIX ---
+        # 使用 heic_file.find_box 进行递归搜索，因为 mpvd 嵌套在 meta 中
+        mpvd_box = heic_file.find_box('mpvd')
+        if mpvd_box:
+            print(f"Samsung 'mpvd' box found at offset {mpvd_box.offset}")
+            # 视频数据在 8 字节头部之后开始
+            return mpvd_box.offset + 8
+        # --- END FIX ---
         
         print("Samsung HEIC detected, but no 'mpvd' box found.")
         return None
