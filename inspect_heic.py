@@ -1,8 +1,9 @@
 # pyheic_struct/inspect_heic.py
 
 import sys
-from heic_file import HEICFile
 import pprint # 用于漂亮地打印字典
+
+from pyheic_struct import HEICFile
 
 def inspect_file(filename: str):
     print(f"--- 正在侦察: {filename} ---")
