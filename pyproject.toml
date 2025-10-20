@@ -3,7 +3,7 @@ name = "pyheic-struct"
 version = "0.1.0"
 description = "Low-level utilities for parsing and rebuilding HEIC/HEIF files, with Samsung-to-Apple motion photo conversion helpers."
 authors = [
-    { name = "Your Name", email = "you@example.com" }
+    { name = "Nymiro Yi", email = "dmwf994@dmwf994.com" }
 ]
 license = { text = "MIT" }
 readme = "README.md"
