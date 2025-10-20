@@ -3,7 +3,7 @@
 import struct
 from base import Box, FullBox
 from io import BytesIO
-from typing import List # <-- 添加 List 导入
+from typing import List, Optional # <-- 添加 List, Optional 导入
 
 # --- 帮助函数 ---
 
@@ -212,6 +212,8 @@ class ItemInfoEntryBox(FullBox):
         self.item_protection_index: int = 0
         self.item_type: str = "" # 4-char code
         self.item_name: str = "" # UTF-8 string
+        self.content_type: Optional[str] = None
+        self.content_encoding: Optional[str] = None
         super().__init__(size, box_type, offset, raw_data)
 
     def _post_parse_initialization(self):
@@ -229,6 +231,19 @@ class ItemInfoEntryBox(FullBox):
                 name_end = stream.find(b'\x00', pos)
                 if name_end == -1: name_end = len(stream)
                 self.item_name = stream[pos:name_end].decode('utf-8', errors='ignore')
+                pos = min(name_end + 1, len(stream))
+
+                if pos < len(stream):
+                    ctype_end = stream.find(b'\x00', pos)
+                    if ctype_end == -1: ctype_end = len(stream)
+                    self.content_type = stream[pos:ctype_end].decode('utf-8', errors='ignore')
+                    pos = min(ctype_end + 1, len(stream))
+
+                if pos < len(stream):
+                    cenc_end = stream.find(b'\x00', pos)
+                    if cenc_end == -1: cenc_end = len(stream)
+                    self.content_encoding = stream[pos:cenc_end].decode('utf-8', errors='ignore')
+                    pos = min(cenc_end + 1, len(stream))
                 
             elif self.version == 2:
                 self.item_id = struct.unpack('>I', stream[pos:pos+4])[0]
@@ -264,6 +279,19 @@ class ItemInfoEntryBox(FullBox):
                 name_end = stream.find(b'\x00', pos)
                 if name_end == -1: name_end = len(stream)
                 self.item_name = stream[pos:name_end].decode('utf-8', errors='ignore')
+                pos = min(name_end + 1, len(stream))
+
+                if pos < len(stream):
+                    ctype_end = stream.find(b'\x00', pos)
+                    if ctype_end == -1: ctype_end = len(stream)
+                    self.content_type = stream[pos:ctype_end].decode('utf-8', errors='ignore')
+                    pos = min(ctype_end + 1, len(stream))
+
+                if pos < len(stream):
+                    cenc_end = stream.find(b'\x00', pos)
+                    if cenc_end == -1: cenc_end = len(stream)
+                    self.content_encoding = stream[pos:cenc_end].decode('utf-8', errors='ignore')
+                    pos = min(cenc_end + 1, len(stream))
 
             elif self.version == 3:
                 self.item_id = struct.unpack('>H', stream[pos:pos+2])[0]
@@ -275,6 +303,19 @@ class ItemInfoEntryBox(FullBox):
                 name_end = stream.find(b'\x00', pos)
                 if name_end == -1: name_end = len(stream)
                 self.item_name = stream[pos:name_end].decode('utf-8', errors='ignore')
+                pos = min(name_end + 1, len(stream))
+
+                if pos < len(stream):
+                    ctype_end = stream.find(b'\x00', pos)
+                    if ctype_end == -1: ctype_end = len(stream)
+                    self.content_type = stream[pos:ctype_end].decode('utf-8', errors='ignore')
+                    pos = min(ctype_end + 1, len(stream))
+
+                if pos < len(stream):
+                    cenc_end = stream.find(b'\x00', pos)
+                    if cenc_end == -1: cenc_end = len(stream)
+                    self.content_encoding = stream[pos:cenc_end].decode('utf-8', errors='ignore')
+                    pos = min(cenc_end + 1, len(stream))
                 
         except (struct.error, IndexError) as e:
             print(f"Warning: Failed to parse 'infe' box (v{self.version}). Content may be truncated. Error: {e}")
@@ -292,19 +333,27 @@ class ItemInfoEntryBox(FullBox):
             content.write(struct.pack('>H', self.item_id))
             content.write(struct.pack('>H', self.item_protection_index))
             content.write(item_name_bytes_to_write)
-            
+
         elif self.version == 2:
             content.write(struct.pack('>I', self.item_id))
             content.write(struct.pack('>H', self.item_protection_index))
             # item_type 必须是 4 字节的 4CC，若不足则以 NUL 填充
             content.write(self.item_type.encode('ascii', errors='ignore')[:4].ljust(4, b'\x00'))
             content.write(item_name_bytes_to_write)
-            
+            if self.content_type is not None:
+                content.write(self.content_type.encode('utf-8') + b'\x00')
+            if self.content_encoding is not None:
+                content.write(self.content_encoding.encode('utf-8') + b'\x00')
+
         elif self.version == 3:
             content.write(struct.pack('>H', self.item_id))
             content.write(struct.pack('>H', self.item_protection_index))
             content.write(self.item_type.encode('ascii').ljust(4, b'\x00'))
             content.write(item_name_bytes_to_write)
+            if self.content_type is not None:
+                content.write(self.content_type.encode('utf-8') + b'\x00')
+            if self.content_encoding is not None:
+                content.write(self.content_encoding.encode('utf-8') + b'\x00')
             
         return content.getvalue()
 
