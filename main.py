@@ -132,19 +132,13 @@ def convert_samsung_to_apple(samsung_file_path: str):
             shifted_id_map = {} 
 
             if iinf_children_to_fix:
-                print(f"  Found {len(iinf_children_to_fix)} shifted 'infe' boxes. Fixing them...")
+                print(f"  Found {len(iinf_children_to_fix)} shifted 'infe' boxes. Mapping IDs for reference...")
                 for infe_box in iinf_children_to_fix:
                     unshifted_id = infe_box.item_id >> 16
                     # 检查 unshifted_id 是否真的在 correct_ids 中，以防万一
                     if unshifted_id in correct_ids:
                         shifted_id_map[infe_box.item_id] = unshifted_id # 存映射
-                        print(f"  - Fixing 'infe' ID {infe_box.item_id} -> {unshifted_id}")
-                        infe_box.item_id = unshifted_id
-                    
-                # 同时修复 iinf_box.entries 中的缓存
-                for entry in flat_heic_file._iinf_box.entries:
-                    if entry.item_id in shifted_id_map:
-                        entry.item_id = shifted_id_map[entry.item_id]
+                        print(f"  - Mapping 'infe' ID {infe_box.item_id} -> {unshifted_id}")
             else:
                  print("  'infe' boxes seem correct. No shift detected.")
 

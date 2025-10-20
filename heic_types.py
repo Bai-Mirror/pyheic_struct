@@ -30,6 +30,11 @@ def _write_int(value: int, size: int) -> bytes:
 class ItemLocation:
     def __init__(self, item_id):
         self.item_id = item_id
+        self.data_reference_index = 0
+        self.base_offset = 0
+        self.construction_method = 0
+        self.extent_indices = []
+        self.raw_extents = []  # (relative_offset, length)
         # extents 存储 (absolute_offset, length)
         self.extents = [] 
 
@@ -81,9 +86,11 @@ class ItemLocationBox(FullBox):
             loc = ItemLocation(item_id)
 
             if (self.version == 1 or self.version == 2) and current_pos + 2 <= len(stream):
+                loc.construction_method = struct.unpack('>H', stream[current_pos:current_pos+2])[0]
                 current_pos += 2 
 
             if current_pos + 2 > len(stream): break 
+            loc.data_reference_index = struct.unpack('>H', stream[current_pos:current_pos+2])[0]
             current_pos += 2 
             
             base_offset = 0
@@ -91,6 +98,7 @@ class ItemLocationBox(FullBox):
                 if current_pos + self.base_offset_size > len(stream): break
                 base_offset = _read_int(stream, current_pos, self.base_offset_size)
                 current_pos += self.base_offset_size
+            loc.base_offset = base_offset
 
             if current_pos + 2 > len(stream): break
             extent_count = struct.unpack('>H', stream[current_pos : current_pos+2])[0]
@@ -99,6 +107,7 @@ class ItemLocationBox(FullBox):
             for __ in range(extent_count):
                 if (self.version == 1 or self.version == 2) and self.index_size > 0:
                      if current_pos + self.index_size > len(stream): break
+                     loc.extent_indices.append(_read_int(stream, current_pos, self.index_size))
                      current_pos += self.index_size 
 
                 if current_pos + self.offset_size > len(stream): break
@@ -109,6 +118,7 @@ class ItemLocationBox(FullBox):
                 extent_length = _read_int(stream, current_pos, self.length_size)
                 current_pos += self.length_size
                 
+                loc.raw_extents.append((extent_offset, extent_length))
                 loc.extents.append((base_offset + extent_offset, extent_length))
             self.locations.append(loc)
 
@@ -134,58 +144,81 @@ class ItemLocationBox(FullBox):
         else:
             content_stream.write(struct.pack('>I', len(self.locations)))
 
+        original_mdat_end_offset = original_mdat_offset + original_mdat_size
+        original_meta_end_offset = original_meta_offset + original_meta_size
+
+        def _adjust_absolute_offset(original_offset: int) -> int:
+            if original_offset == 0:
+                return 0
+            if original_mdat_offset <= original_offset < original_mdat_end_offset:
+                return original_offset + mdat_offset_delta
+            if original_meta_offset <= original_offset < original_meta_end_offset:
+                return original_offset + meta_offset_delta
+            return original_offset
+
         for loc in self.locations:
             item_id_size = 2 if self.version < 2 else 4
             content_stream.write(_write_int(loc.item_id, item_id_size))
             
             if (self.version == 1 or self.version == 2):
-                content_stream.write(struct.pack('>H', 0)) 
+                content_stream.write(struct.pack('>H', loc.construction_method & 0xFFFF))
             
-            content_stream.write(struct.pack('>H', 0)) 
+            content_stream.write(struct.pack('>H', loc.data_reference_index))
             
             if self.base_offset_size > 0:
-                content_stream.write(_write_int(0, self.base_offset_size)) 
-                
-            content_stream.write(struct.pack('>H', len(loc.extents)))
+                new_base_offset = _adjust_absolute_offset(loc.base_offset)
+                content_stream.write(_write_int(new_base_offset, self.base_offset_size))
+            else:
+                new_base_offset = 0
             
-            for (original_offset, length) in loc.extents:
-                if (self.version == 1 or self.version == 2) and self.index_size > 0:
-                    content_stream.write(_write_int(0, self.index_size)) 
-                
-                # !!! 魔法发生的地方 !!!
-                new_absolute_offset = original_offset
-                original_mdat_end_offset = original_mdat_offset + original_mdat_size
-                original_meta_end_offset = original_meta_offset + original_meta_size
-                
-                if original_offset == 0:
-                    new_absolute_offset = 0 # 保持 0 偏移量
-                
-                # 检查偏移量是否落在 *原始* mdat 盒区域内
-                elif (original_mdat_offset <= original_offset < original_mdat_end_offset):
-                    # 这是一个指向 mdat 的偏移量，应用 mdat 增量
-                    new_absolute_offset = original_offset + mdat_offset_delta
-                    
-                # pyheic_struct_副本/heic_types.py
+            extents_to_process = loc.raw_extents if loc.raw_extents else [
+                (max(absolute_offset - loc.base_offset, 0), length) 
+                for absolute_offset, length in loc.extents
+            ]
+            content_stream.write(struct.pack('>H', len(extents_to_process)))
 
-                # 检查偏移量是否落在 *原始* meta 盒区域内
-                elif (original_meta_offset <= original_offset < original_meta_end_offset):
-                    # 这是一个指向 meta 内部的偏移量 (例如 EXIF)
-                    # (*** 错误修正 ***) 
-                    # 它只应该被 *meta 盒之前* 的数据增长所平移。
-                    # 在我们的 builder.py 逻辑中, 'meta_offset_delta' 正是这个值 (即 ftyp 盒的增长)。
-                    new_absolute_offset = original_offset + meta_offset_delta
+            new_extents_absolute = []
+            new_extents_relative = []
+            new_extent_indices = []
+
+            for idx, (original_relative_offset, length) in enumerate(extents_to_process):
+                if (self.version == 1 or self.version == 2) and self.index_size > 0:
+                    extent_index = loc.extent_indices[idx] if idx < len(loc.extent_indices) else 0
+                    content_stream.write(_write_int(extent_index, self.index_size))
+                    new_extent_indices.append(extent_index)
                 
-                # else:
-                    # 这是一个指向其他地方 (如 ftyp) 的偏移量，我们假设它不动
-                    # new_absolute_offset 保持等于 original_offset
+                original_absolute_offset = loc.base_offset + original_relative_offset
+                new_absolute_offset = _adjust_absolute_offset(original_absolute_offset)
+                
+                if original_absolute_offset == 0:
+                    new_absolute_offset = 0 # 保持 0 偏移量
                 
                 # 最后的安全检查，防止打包负数
                 if new_absolute_offset < 0:
                     print(f"  Warning: Calculated a negative offset ({new_absolute_offset}) for item {loc.item_id}. Setting to 0.")
                     new_absolute_offset = 0
+
+                if self.base_offset_size > 0:
+                    new_relative_offset = new_absolute_offset - new_base_offset
+                else:
+                    new_relative_offset = new_absolute_offset
+
+                if new_relative_offset < 0:
+                    print(f"  Warning: Calculated a negative relative offset ({new_relative_offset}) for item {loc.item_id}. Setting to 0.")
+                    new_relative_offset = 0
+                    new_absolute_offset = new_base_offset
                 
-                content_stream.write(_write_int(new_absolute_offset, self.offset_size))
+                content_stream.write(_write_int(new_relative_offset, self.offset_size))
                 content_stream.write(_write_int(length, self.length_size))
+                
+                new_extents_absolute.append((new_absolute_offset, length))
+                new_extents_relative.append((new_relative_offset, length))
+
+            loc.base_offset = new_base_offset
+            loc.extents = new_extents_absolute
+            loc.raw_extents = new_extents_relative
+            if new_extent_indices:
+                loc.extent_indices = new_extent_indices
 
         self.raw_data = content_stream.getvalue()
         print(" 'iloc' box content successfully rebuilt.")
@@ -214,6 +247,7 @@ class ItemInfoEntryBox(FullBox):
         self.item_name: str = "" # UTF-8 string
         self.content_type: Optional[str] = None
         self.content_encoding: Optional[str] = None
+        self._has_protection_field: bool = True
         super().__init__(size, box_type, offset, raw_data)
 
     def _post_parse_initialization(self):
@@ -250,6 +284,7 @@ class ItemInfoEntryBox(FullBox):
                 pos += 4
 
                 remaining = len(stream) - pos
+                self._has_protection_field = False
                 if remaining >= 6:
                     candidate_protection = struct.unpack('>H', stream[pos:pos+2])[0]
                     candidate_type = stream[pos+2:pos+6]
@@ -257,17 +292,20 @@ class ItemInfoEntryBox(FullBox):
                     if candidate_protection <= 0x00FF and b'\x00' not in candidate_type:
                         # 标准顺序: 2 字节保护索引 + 4 字节类型
                         self.item_protection_index = candidate_protection
+                        self._has_protection_field = True
                         pos += 2
                         type_bytes = candidate_type
                         pos += 4
                     else:
                         # 三星文件: 直接写入类型 (如 'hvc1')，缺少保护索引
                         self.item_protection_index = 0
+                        self._has_protection_field = False
                         type_bytes = stream[pos:pos+4]
                         pos += 4
                 elif remaining >= 4:
                     # 某些三星文件缺少 2 字节的保护索引字段, 直接紧跟 4 字节类型
                     self.item_protection_index = 0
+                    self._has_protection_field = False
                     type_bytes = stream[pos:pos+4]
                     pos += 4
                 else:
@@ -336,7 +374,8 @@ class ItemInfoEntryBox(FullBox):
 
         elif self.version == 2:
             content.write(struct.pack('>I', self.item_id))
-            content.write(struct.pack('>H', self.item_protection_index))
+            if self._has_protection_field:
+                content.write(struct.pack('>H', self.item_protection_index))
             # item_type 必须是 4 字节的 4CC，若不足则以 NUL 填充
             content.write(self.item_type.encode('ascii', errors='ignore')[:4].ljust(4, b'\x00'))
             content.write(item_name_bytes_to_write)
@@ -458,13 +497,25 @@ class ImageSpatialExtentsBox(FullBox):
         return content.getvalue()
 
 # --- ItemPropertyAssociationEntry (DataClass) ---
+class ItemPropertyAssociation:
+    def __init__(self, property_index: int, essential: bool):
+        self.property_index = property_index
+        self.essential = essential
+
+    def __repr__(self):
+        flag = '!' if self.essential else ''
+        return f"{flag}{self.property_index}"
+
+
 class ItemPropertyAssociationEntry:
     def __init__(self, item_id, association_count):
         self.item_id = item_id
         self.association_count = association_count
-        self.associations = []
+        self.associations: List[ItemPropertyAssociation] = []
+
     def __repr__(self):
-        return f"<ItemPropertyAssociationEntry item_id={self.item_id} associations={self.associations}>"
+        return (f"<ItemPropertyAssociationEntry item_id={self.item_id} "
+                f"associations={[repr(a) for a in self.associations]}>")
 
 # --- ItemPropertyAssociationBox ---
 # ('ipma')
@@ -500,10 +551,14 @@ class ItemPropertyAssociationBox(FullBox):
                     prop_size = 2 if is_large_property_index else 1
                     if pos + prop_size > len(stream): break
                     assoc_value = _read_int(stream, pos, prop_size)
+                    essential_flag = 0x8000 if prop_size == 2 else 0x80
                     property_index = assoc_value & (0x7FFF if prop_size == 2 else 0x7F)
+                    is_essential = (assoc_value & essential_flag) != 0
                     pos += prop_size
                     if property_index > 0:
-                        entry.associations.append(property_index)
+                        entry.associations.append(
+                            ItemPropertyAssociation(property_index, is_essential)
+                        )
                 self.entries[item_id] = entry
         except struct.error:
             print("Warning: Failed to parse 'ipma' box. Content may be truncated.")
@@ -521,9 +576,14 @@ class ItemPropertyAssociationBox(FullBox):
             content.write(_write_int(item_id, item_id_size))
             content.write(struct.pack('>B', len(entry.associations))) 
             
-            for assoc_index in entry.associations:
+            for assoc in entry.associations:
                 prop_size = 2 if is_large_property_index else 1
-                content.write(_write_int(assoc_index, prop_size))
+                mask = 0x7FFF if prop_size == 2 else 0x7F
+                essential_flag = 0x8000 if prop_size == 2 else 0x80
+                assoc_value = assoc.property_index & mask
+                if assoc.essential:
+                    assoc_value |= essential_flag
+                content.write(_write_int(assoc_value, prop_size))
                 
         return content.getvalue()
 

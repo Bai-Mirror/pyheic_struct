@@ -163,7 +163,10 @@ class HEICFile:
                 return 
             
             # 4a. 找到要删除的属性索引 (1-based)
-            props_to_remove = set(ipma.entries[item_id_to_remove].associations)
+            props_to_remove = {
+                assoc.property_index
+                for assoc in ipma.entries[item_id_to_remove].associations
+            }
             
             # 4b. 从 ipma 中删除该 Item
             del ipma.entries[item_id_to_remove]
@@ -173,7 +176,9 @@ class HEICFile:
             # (即，它们在 props_to_remove 中，但*不在*任何*剩余*的 item 关联中)
             all_remaining_props = set()
             for entry in ipma.entries.values():
-                all_remaining_props.update(entry.associations)
+                all_remaining_props.update(
+                    assoc.property_index for assoc in entry.associations
+                )
             
             orphaned_props = props_to_remove - all_remaining_props
             
@@ -218,9 +223,11 @@ class HEICFile:
                 # 4g. 应用重映射
                 for item_id, entry in ipma.entries.items():
                     new_associations = []
-                    for old_prop_index in entry.associations:
+                    for assoc in entry.associations:
+                        old_prop_index = assoc.property_index
                         if old_prop_index in remap_table:
-                            new_associations.append(remap_table[old_prop_index])
+                            assoc.property_index = remap_table[old_prop_index]
+                            new_associations.append(assoc)
                         # else:
                         #   该属性已被删除 (不应发生，因为我们只删除了孤儿)
                     
@@ -351,7 +358,7 @@ class HEICFile:
         
         item_associations = self._iprp_box.ipma.entries[target_id].associations
         for assoc in item_associations:
-            property_index = assoc - 1
+            property_index = assoc.property_index - 1
             if 0 <= property_index < len(self._iprp_box.ipco.children):
                 prop = self._iprp_box.ipco.children[property_index]
                 if isinstance(prop, ImageSpatialExtentsBox):
