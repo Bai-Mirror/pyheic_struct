@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, ttk
 
 # 假设 pyheic_struct 在你的 Python 路径中
 # from pyheic_struct import AppleTargetAdapter, HEICFile, convert_motion_photo
-
+'''
 # --- Mocking pyheic_struct for testing if not installed ---
 # 如果你没有安装 pyheic_struct，请取消注释下面的部分来模拟它
 try:
@@ -48,7 +48,7 @@ except ImportError:
     AppleTargetAdapter = MockAppleTargetAdapter
     convert_motion_photo = mock_convert_motion_photo
 # --- End of Mocking ---
-
+'''
 
 STILL_SUFFIXES = {".heic", ".heif"}
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".qt", ".3gp"}
@@ -56,7 +56,7 @@ VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".qt", ".3gp"}
 TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "zh": {
         "app_title": "Live Photo / Motion Photo 批处理工具",
-        "menu_language": "语言",
+        "menu_language": "Language",
         "menu_language_zh": "中文",
         "menu_language_en": "English",
         "label_directory": "处理目录:",
@@ -102,7 +102,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     },
     "en": {
         "app_title": "Live / Motion Photo Batch Manager",
-        "menu_language": "Language",
+        "menu_language": "语言/Language",
         "menu_language_zh": "Chinese",
         "menu_language_en": "English",
         "label_directory": "Folder:",
@@ -429,7 +429,7 @@ class BatchManagerGUI:
     
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("Live Photo / Motion Photo 批处理工具")
+        # 标题与所有文案通过 _update_ui_text 统一设置
         self.root.geometry("780x520")
 
         self.lang = tk.StringVar(value="zh")
@@ -448,7 +448,29 @@ class BatchManagerGUI:
         self.progress_total = 0
         self.progress_done = 0
 
+        # 需要在更新语言时动态修改文本的控件引用
+        self.label_directory = None
+        self.browse_button = None
+        self.options_frame = None
+        self.cb_live_pair = None
+        self.cb_convert_motion = None
+        self.cb_cleanup_mp4 = None
+        self.cb_archive_originals = None
+        self.label_workers = None
+        self.worker_spin = None
+        self.start_button = None
+        self.progress_bar = None
+        self.progress_label = None
+        self.log_frame = None
+        self.log_text = None
+
+        # 菜单引用
+        self.menubar = None
+
         self._build_ui()
+        self._build_menubar()
+        self._update_ui_text()
+
         self.root.after(100, self._poll_queue)
 
     def run(self) -> None:
@@ -458,45 +480,87 @@ class BatchManagerGUI:
         lang_map = TRANSLATIONS.get(self.lang.get(), TRANSLATIONS["zh"])
         return lang_map.get(key, TRANSLATIONS["zh"].get(key, key))
 
+    # ========== 新增：菜单与语言切换 ==========
+    def _set_language(self, lang: str) -> None:
+        """切换语言并刷新所有 UI 文案。"""
+        if lang not in TRANSLATIONS:
+            return
+        self.lang.set(lang)
+        self._build_menubar()      # 先重建菜单（更新顶层文本）
+        self._update_ui_text()     # 再更新其余控件文本
+
+    def _build_menubar(self) -> None:
+        """根据当前语言重建菜单（最简单可靠地更新 cascade 文本）。"""
+        if self.menubar is not None:
+            # 移除旧菜单
+            self.root.config(menu=tk.Menu(self.root))  # 临时空菜单
+        menubar = tk.Menu(self.root)
+
+        # 语言菜单
+        language_menu = tk.Menu(menubar, tearoff=0)
+        language_menu.add_command(
+            label=self._t("menu_language_zh"),
+            command=lambda: self._set_language("zh")
+        )
+        language_menu.add_command(
+            label=self._t("menu_language_en"),
+            command=lambda: self._set_language("en")
+        )
+        menubar.add_cascade(label=self._t("menu_language"), menu=language_menu)
+
+        self.menubar = menubar
+        self.root.config(menu=self.menubar)
+
+    # ========== 原有 UI 构建，加入控件引用 ==========
     def _build_ui(self) -> None:
         padding = {"padx": 10, "pady": 6}
 
         path_frame = ttk.Frame(self.root)
         path_frame.pack(fill="x", **padding)
 
-        ttk.Label(path_frame, text=self._t("label_directory")).pack(side="left")
+        self.label_directory = ttk.Label(path_frame, text=self._t("label_directory"))
+        self.label_directory.pack(side="left")
         entry = ttk.Entry(path_frame, textvariable=self.path_var)
         entry.pack(side="left", fill="x", expand=True, padx=(8, 8))
 
-        ttk.Button(path_frame, text=self._t("button_browse"), command=self._choose_directory).pack(side="left")
+        self.browse_button = ttk.Button(path_frame, text=self._t("button_browse"), command=self._choose_directory)
+        self.browse_button.pack(side="left")
 
-        options_frame = ttk.LabelFrame(self.root, text=self._t("group_options"))
-        options_frame.pack(fill="x", **padding)
+        self.options_frame = ttk.LabelFrame(self.root, text=self._t("group_options"))
+        self.options_frame.pack(fill="x", **padding)
 
-        ttk.Checkbutton(
-            options_frame,
+        self.cb_live_pair = ttk.Checkbutton(
+            self.options_frame,
             text=self._t("option_live_pair"),
             variable=self.handle_live_var,
-        ).pack(anchor="w", padx=8, pady=2)
-        ttk.Checkbutton(
-            options_frame,
+        )
+        self.cb_live_pair.pack(anchor="w", padx=8, pady=2)
+
+        self.cb_convert_motion = ttk.Checkbutton(
+            self.options_frame,
             text=self._t("option_convert_motion"),
             variable=self.convert_motion_var,
-        ).pack(anchor="w", padx=8, pady=2)
-        ttk.Checkbutton(
-            options_frame,
+        )
+        self.cb_convert_motion.pack(anchor="w", padx=8, pady=2)
+
+        self.cb_cleanup_mp4 = ttk.Checkbutton(
+            self.options_frame,
             text=self._t("option_cleanup_mp4"),
             variable=self.remove_mp4_var,
-        ).pack(anchor="w", padx=8, pady=2)
-        ttk.Checkbutton(
-            options_frame,
+        )
+        self.cb_cleanup_mp4.pack(anchor="w", padx=8, pady=2)
+
+        self.cb_archive_originals = ttk.Checkbutton(
+            self.options_frame,
             text=self._t("option_archive_originals"),
             variable=self.archive_originals_var,
-        ).pack(anchor="w", padx=8, pady=2)
+        )
+        self.cb_archive_originals.pack(anchor="w", padx=8, pady=2)
 
         worker_frame = ttk.Frame(self.root)
         worker_frame.pack(fill="x", **padding)
-        ttk.Label(worker_frame, text=self._t("label_workers")).pack(side="left")
+        self.label_workers = ttk.Label(worker_frame, text=self._t("label_workers"))
+        self.label_workers.pack(side="left")
         self.worker_spin = ttk.Spinbox(
             worker_frame,
             from_=1,
@@ -517,19 +581,57 @@ class BatchManagerGUI:
         self.progress_label = ttk.Label(self.root, text=self._t("progress_status").format(done=0, total=0))
         self.progress_label.pack(fill="x", padx=10, pady=(2, 6))
 
-        log_frame = ttk.LabelFrame(self.root, text=self._t("log_group"))
-        log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        self.log_text = tk.Text(log_frame, height=16, wrap="word")
+        self.log_frame = ttk.LabelFrame(self.root, text=self._t("log_group"))
+        self.log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.log_text = tk.Text(self.log_frame, height=16, wrap="word")
         self.log_text.pack(side="left", fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
+        scrollbar = ttk.Scrollbar(self.log_frame, command=self.log_text.yview)
         scrollbar.pack(side="right", fill="y")
         self.log_text.configure(yscrollcommand=scrollbar.set)
-        
-        self._update_ui_text()
-        
+
+    # ========== 新增：根据当前语言刷新所有控件文本 ==========
+    def _refresh_progress_label(self) -> None:
+        self.progress_label.config(
+            text=self._t("progress_status").format(done=self.progress_done, total=self.progress_total)
+        )
+
     def _update_ui_text(self) -> None:
+        # 窗口标题
         self.root.title(self._t("app_title"))
-        pass
+
+        # 顶部输入区
+        if self.label_directory is not None:
+            self.label_directory.config(text=self._t("label_directory"))
+        if self.browse_button is not None:
+            self.browse_button.config(text=self._t("button_browse"))
+
+        # 选项分组
+        if self.options_frame is not None:
+            self.options_frame.config(text=self._t("group_options"))
+        if self.cb_live_pair is not None:
+            self.cb_live_pair.config(text=self._t("option_live_pair"))
+        if self.cb_convert_motion is not None:
+            self.cb_convert_motion.config(text=self._t("option_convert_motion"))
+        if self.cb_cleanup_mp4 is not None:
+            self.cb_cleanup_mp4.config(text=self._t("option_cleanup_mp4"))
+        if self.cb_archive_originals is not None:
+            self.cb_archive_originals.config(text=self._t("option_archive_originals"))
+
+        # 线程/控制区
+        if self.label_workers is not None:
+            self.label_workers.config(text=self._t("label_workers"))
+        if self.start_button is not None:
+            self.start_button.config(text=self._t("button_start"))
+
+        # 进度文本
+        if self.progress_label is not None:
+            self._refresh_progress_label()
+
+        # 日志分组
+        if self.log_frame is not None:
+            self.log_frame.config(text=self._t("log_group"))
+
+        # 菜单（每次切换语言已在 _build_menubar 重建，此处无需再次处理）
 
     def _choose_directory(self) -> None:
         selected = filedialog.askdirectory()
