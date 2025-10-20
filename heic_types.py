@@ -274,12 +274,10 @@ class ItemInfoEntryBox(FullBox):
             content.write(item_name_bytes_to_write)
             
         elif self.version == 2:
-            # --- START FIX 4 (Builder) ---
-            # 保持为苹果顺序 (ID, Type, ProtIdx) 以正确 *写入* 兼容文件
             content.write(struct.pack('>I', self.item_id))
-            content.write(self.item_type.encode('ascii').ljust(4, b'\x00'))
             content.write(struct.pack('>H', self.item_protection_index))
-            # --- END FIX 4 ---
+            # item_type 必须是 4 字节的 4CC，若不足则以 NUL 填充
+            content.write(self.item_type.encode('ascii', errors='ignore')[:4].ljust(4, b'\x00'))
             content.write(item_name_bytes_to_write)
             
         elif self.version == 3:
