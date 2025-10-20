@@ -10,6 +10,7 @@ import queue
 import shutil
 import subprocess
 import threading
+import datetime  # 导入 datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "option_live_pair": "检测 Live Photo 配对并移动缺失伴侣的视频",
         "option_convert_motion": "将三星 Motion Photo 转换为 Live Photo",
         "option_cleanup_mp4": "清除带有 MotionPhoto_Data 标记的多余 MP4",
+        "option_archive_originals": "归档原始三星照片 (转换为zip)", # 新增
         "label_workers": "并发线程数:",
         "button_start": "开始处理",
         "progress_status": "进度: {done} / {total}",
@@ -82,6 +84,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "log_task_entry": "[{task}] {result}",
         "log_finished": "全部任务已完成。",
         "log_processing_done": "处理完毕。",
+        "log_archiving": "正在归档原始照片...", # 新增
+        "log_archive_complete": "归档完成: {zip_path}", # 新增
+        "log_archive_failed": "归档失败: {error}", # 新增
         "task_orphan_video": "孤立视频: {path}",
         "task_motion_convert": "Motion Photo 转 Live Photo: {path}",
         "task_cleanup_mp4": "清理 MP4: {path}",
@@ -92,6 +97,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "result_cleanup_kept": "保留",
         "result_cleanup_skipped": "跳过 (缺少 exiftool)",
         "result_failed": "失败: {error}",
+        "result_archived": "已归档原始文件", # 新增
     },
     "en": {
         "app_title": "Live / Motion Photo Batch Manager",
@@ -104,6 +110,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "option_live_pair": "Check Live Photo pairs and move orphaned videos",
         "option_convert_motion": "Convert Samsung Motion Photos to Live Photo",
         "option_cleanup_mp4": "Remove redundant MP4 files tagged MotionPhoto_Data",
+        "option_archive_originals": "Archive original Samsung photos (as zip)", # New
         "label_workers": "Worker threads:",
         "button_start": "Start",
         "progress_status": "Progress: {done} / {total}",
@@ -122,6 +129,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "log_task_entry": "[{task}] {result}",
         "log_finished": "All tasks completed.",
         "log_processing_done": "Processing finished.",
+        "log_archiving": "Archiving original photos...", # New
+        "log_archive_complete": "Archive complete: {zip_path}", # New
+        "log_archive_failed": "Archive failed: {error}", # New
         "task_orphan_video": "Orphan video: {path}",
         "task_motion_convert": "Motion Photo → Live Photo: {path}",
         "task_cleanup_mp4": "Cleanup MP4: {path}",
@@ -132,6 +142,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "result_cleanup_kept": "Kept",
         "result_cleanup_skipped": "Skipped (exiftool unavailable)",
         "result_failed": "Failed: {error}",
+        "result_archived": "Archived original file", # New
     },
 }
 
@@ -142,12 +153,13 @@ class ProcessingOptions:
     handle_live_pairs: bool
     convert_motion: bool
     remove_motion_mp4: bool
+    archive_originals: bool # 新增
     max_workers: int
 
 
 @dataclass
 class Task:
-    func: Callable[[], str | None]
+    func: Callable[[], dict] # 修改：返回 dict 而不是 str
     description: str
 
 
@@ -159,7 +171,7 @@ def _is_motion_photo(heic_path: Path) -> bool:
         return False
 
 
-def _move_orphan_video(mov_path: Path, root_dir: Path, tr: Callable[[str], str]) -> str:
+def _move_orphan_video(mov_path: Path, root_dir: Path, tr: Callable[[str], str]) -> dict:
     error_dir = root_dir / "错误的LivePhoto视频"
     error_dir.mkdir(parents=True, exist_ok=True)
 
@@ -170,15 +182,15 @@ def _move_orphan_video(mov_path: Path, root_dir: Path, tr: Callable[[str], str])
         counter += 1
 
     shutil.move(str(mov_path), str(destination))
-    return tr("result_moved", dest=str(destination))
+    return {"status": "MOVED", "message": tr("result_moved", dest=str(destination))}
 
 
-def _convert_motion_photo(heic_path: Path, inject_mov_tag: bool, tr: Callable[[str], str]) -> str:
+def _convert_motion_photo(heic_path: Path, inject_mov_tag: bool, tr: Callable[[str], str]) -> dict:
     output_still = heic_path.with_name(f"{heic_path.stem}_apple_compatible.HEIC")
     output_video = heic_path.with_name(f"{heic_path.stem}_apple_compatible.MOV")
 
     if output_still.exists() or output_video.exists():
-        return tr("result_skipped_exists")
+        return {"status": "SKIPPED", "message": tr("result_skipped_exists")}
 
     heic_out, mov_out = convert_motion_photo(
         heic_path,
@@ -188,12 +200,16 @@ def _convert_motion_photo(heic_path: Path, inject_mov_tag: bool, tr: Callable[[s
         output_video=output_video,
         inject_content_id_into_mov=inject_mov_tag,
     )
-    return tr("result_converted", heic=heic_out.name, mov=mov_out.name)
+    return {
+        "status": "CONVERTED",
+        "message": tr("result_converted", heic=heic_out.name, mov=mov_out.name),
+        "original_path": heic_path,  # 返回原始路径以供归档
+    }
 
 
-def _cleanup_motion_mp4(mp4_path: Path, has_exiftool: bool, tr: Callable[[str], str]) -> str:
+def _cleanup_motion_mp4(mp4_path: Path, has_exiftool: bool, tr: Callable[[str], str]) -> dict:
     if not has_exiftool:
-        return tr("result_cleanup_skipped")
+        return {"status": "SKIPPED_EXIF", "message": tr("result_cleanup_skipped")}
 
     cmd = [
         "exiftool",
@@ -208,8 +224,8 @@ def _cleanup_motion_mp4(mp4_path: Path, has_exiftool: bool, tr: Callable[[str], 
 
     if "MotionPhoto_Data" in output:
         mp4_path.unlink(missing_ok=True)
-        return tr("result_cleanup_removed")
-    return tr("result_cleanup_kept")
+        return {"status": "REMOVED", "message": tr("result_cleanup_removed")}
+    return {"status": "KEPT", "message": tr("result_cleanup_kept")}
 
 
 def _gather_tasks(
@@ -300,6 +316,8 @@ def _worker(options: ProcessingOptions, message_queue: queue.Queue, language: st
     status_text = tr("general_yes") if has_exiftool else tr("general_no")
     emit_log(tr("log_exiftool", status=status_text))
 
+    files_to_archive: List[Path] = [] # 新增：待归档文件列表
+
     try:
         tasks = _gather_tasks(options, has_exiftool, emit_log, tr)
         total = len(tasks)
@@ -319,13 +337,63 @@ def _worker(options: ProcessingOptions, message_queue: queue.Queue, language: st
             for future in as_completed(future_map):
                 task = future_map[future]
                 try:
-                    outcome = future.result()
-                    result_text = outcome if outcome else "done"
+                    outcome = future.result() # 现在是 dict
+                    result_text = outcome.get("message", "done")
+
+                    # 新增：检查是否需要归档
+                    if (
+                        options.archive_originals and
+                        outcome.get("status") == "CONVERTED" and
+                        "original_path" in outcome
+                    ):
+                        files_to_archive.append(outcome["original_path"])
+                        result_text += f" ({tr('result_archived')})"
+
                 except Exception as exc:
                     result_text = tr("result_failed", error=exc)
                 emit_log(tr("log_task_entry", task=task.description, result=result_text))
                 completed += 1
                 message_queue.put(("progress", completed))
+
+        # --- 新增：处理归档 ---
+        if options.archive_originals and files_to_archive:
+            emit_log(tr("log_archiving"))
+            archive_dir_name = "三星原始照片"
+            archive_base_dir = options.root_dir / archive_dir_name
+            
+            try:
+                for original_path in files_to_archive:
+                    # 计算相对路径
+                    relative_path = original_path.relative_to(options.root_dir)
+                    # 创建目标路径
+                    archive_dest = archive_base_dir / relative_path
+                    
+                    # 确保父目录存在
+                    archive_dest.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # 移动文件 (使用 str() 确保兼容性)
+                    shutil.move(str(original_path), str(archive_dest))
+
+                # 打包 Zip
+                datestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                zip_name_base = f"{archive_dir_name}_{datestamp}"
+                
+                # shutil.make_archive 会自动添加 .zip 扩展名
+                zip_path_str = shutil.make_archive(
+                    base_name=str(options.root_dir / zip_name_base),
+                    format="zip",
+                    root_dir=options.root_dir,
+                    base_dir=archive_dir_name,
+                )
+                
+                # 可选：删除原始归档文件夹 (暂时保留)
+                # shutil.rmtree(archive_base_dir)
+
+                emit_log(tr("log_archive_complete", zip_path=Path(zip_path_str).name))
+
+            except Exception as e:
+                emit_log(tr("log_archive_failed", error=e))
+        # --- 归档结束 ---
 
         emit_log(tr("log_finished"))
     except Exception as e:
@@ -336,15 +404,11 @@ def _worker(options: ProcessingOptions, message_queue: queue.Queue, language: st
 
 class BatchManagerGUI:
     
-    # --- 修复 ---
-    # 删除了第一个 __init__，并将 self.lang 添加到第二个 __init__
-    
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Live Photo / Motion Photo 批处理工具")
         self.root.geometry("780x520")
 
-        # 修复：将 self.lang 的定义合并到这个 __init__ 中
         self.lang = tk.StringVar(value="zh")
 
         self.queue: queue.Queue = queue.Queue()
@@ -354,6 +418,7 @@ class BatchManagerGUI:
         self.handle_live_var = tk.BooleanVar(value=True)
         self.convert_motion_var = tk.BooleanVar(value=True)
         self.remove_mp4_var = tk.BooleanVar(value=True)
+        self.archive_originals_var = tk.BooleanVar(value=True) # 新增
         default_workers = max(1, min(4, (os.cpu_count() or 4)))
         self.worker_count_var = tk.IntVar(value=default_workers)
 
@@ -401,6 +466,13 @@ class BatchManagerGUI:
             text=self._t("option_cleanup_mp4"),
             variable=self.remove_mp4_var,
         ).pack(anchor="w", padx=8, pady=2)
+        # --- 新增归档复选框 ---
+        ttk.Checkbutton(
+            options_frame,
+            text=self._t("option_archive_originals"),
+            variable=self.archive_originals_var,
+        ).pack(anchor="w", padx=8, pady=2)
+        # --- 结束 ---
 
         worker_frame = ttk.Frame(self.root)
         worker_frame.pack(fill="x", **padding)
@@ -433,17 +505,11 @@ class BatchManagerGUI:
         scrollbar.pack(side="right", fill="y")
         self.log_text.configure(yscrollcommand=scrollbar.set)
         
-        # P.S. 我还修复了 UI 文本，使其能够响应语言（尽管此脚本中没有切换语言的菜单）
-        # 你原来的 _build_ui 使用了硬编码的中文
         self._update_ui_text()
         
     def _update_ui_text(self) -> None:
         """更新界面上所有可翻译的文本 (此脚本中未实现语言切换，但为未来做准备)"""
         self.root.title(self._t("app_title"))
-        
-        # 这里应该重新配置所有 Label, Button, LabelFrame 的 text
-        # 为了简洁，我在 _build_ui 中直接使用了 self._t()
-        # 如果要实现动态切换，需要在这里引用所有组件并 .config(text=...)
         pass
 
 
@@ -453,7 +519,6 @@ class BatchManagerGUI:
             self.path_var.set(selected)
 
     def _start_processing(self) -> None:
-        # P.S. 我还修复了这里对 _t 方法的调用，你之前遗漏了
         if self.worker_thread and self.worker_thread.is_alive():
             messagebox.showwarning(self._t("warn_processing_title"), self._t("warn_processing_body"))
             return
@@ -468,6 +533,7 @@ class BatchManagerGUI:
             handle_live_pairs=self.handle_live_var.get(),
             convert_motion=self.convert_motion_var.get(),
             remove_motion_mp4=self.remove_mp4_var.get(),
+            archive_originals=self.archive_originals_var.get(), # 新增
             max_workers=self.worker_count_var.get(),
         )
 
@@ -477,7 +543,7 @@ class BatchManagerGUI:
 
         self.worker_thread = threading.Thread(
             target=_worker,
-            args=(options, self.queue, self.lang.get()), # 这一行现在可以正常工作了
+            args=(options, self.queue, self.lang.get()),
             daemon=True,
         )
         self.worker_thread.start()
