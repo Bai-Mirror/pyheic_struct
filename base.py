@@ -1,6 +1,6 @@
 # pyheic_struct/base.py
 
-from typing import List
+from typing import List, Optional
 import struct
 from io import BytesIO
 
@@ -65,6 +65,7 @@ class Box:
             content_stream.write(child_data)
         return content_stream.getvalue()
 
+
     def build_box(self) -> bytes:
         """
         构建完整的盒 (头部 + 内容)，并返回其二进制数据。
@@ -80,7 +81,7 @@ class Box:
         
         return header_data + content_data
 
-    def find_box(self, box_type: str, recursive: bool = True) -> 'Box' | None:
+    def find_box(self, box_type: str, recursive: bool = True) -> Optional['Box']:
         """在子盒中查找指定类型的第一个盒子"""
         for child in self.children:
             if child.type == box_type:
