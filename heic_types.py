@@ -3,49 +3,99 @@
 import struct
 from base import Box
 
-# --- Existing classes (unchanged) ---
-
+# --- A new helper class to handle multiple data locations ('extents') ---
 class ItemLocation:
-    def __init__(self, item_id, offset, length):
+    def __init__(self, item_id):
         self.item_id = item_id
-        self.offset = offset
-        self.length = length
-    def __repr__(self):
-        return f"<ItemLocation ID={self.item_id} offset={self.offset} length={self.length}>"
+        self.extents = [] # Will be a list of (offset, length) tuples
 
+    def __repr__(self):
+        total_length = sum(ext[1] for ext in self.extents)
+        return f"<ItemLocation ID={self.item_id} extents={len(self.extents)} total_size={total_length}>"
+
+# --- REWRITTEN ItemLocationBox to correctly parse all item locations ---
 class ItemLocationBox(Box):
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         super().__init__(size, box_type, offset, raw_data)
         self.locations = []
         self._parse_locations()
+        
     def _parse_locations(self):
         stream = self.raw_data
+        
         version_flags = struct.unpack('>I', stream[:4])[0]
+        version = version_flags >> 24
+        
         sizes = struct.unpack('>H', stream[4:6])[0]
         offset_size = (sizes >> 12) & 0x0F
         length_size = (sizes >> 8) & 0x0F
         base_offset_size = (sizes >> 4) & 0x0F
-        item_count = struct.unpack('>H', stream[6:8])[0]
-        current_pos = 8
+        
+        index_size = 0
+        if version == 1 or version == 2:
+            index_size = sizes & 0x0F
+        
+        item_count = 0
+        if version < 2:
+            item_count = struct.unpack('>H', stream[6:8])[0]
+            current_pos = 8
+        else: # version == 2
+            item_count = struct.unpack('>I', stream[6:10])[0]
+            current_pos = 10
+
         for _ in range(item_count):
-            item_id = struct.unpack('>H', stream[current_pos : current_pos+2])[0]
-            current_pos += 2
-            current_pos += 2 # Skip 2 bytes of construction_method
-            current_pos += base_offset_size # Skip base_offset
+            item_id = 0
+            # Item ID size depends on the box version
+            if version < 2:
+                if current_pos + 2 > len(stream): break
+                item_id = struct.unpack('>H', stream[current_pos : current_pos+2])[0]
+                current_pos += 2
+            else: # version == 2
+                if current_pos + 4 > len(stream): break
+                item_id = struct.unpack('>I', stream[current_pos : current_pos+4])[0]
+                current_pos += 4
+
+            if (version == 1 or version == 2) and current_pos + 2 <= len(stream):
+                current_pos += 2 # Skip construction method
+
+            if current_pos + 2 > len(stream): break
+            current_pos += 2 # Skip data_reference_index
+            
+            base_offset = 0
+            if base_offset_size > 0:
+                if current_pos + base_offset_size > len(stream): break
+                base_offset = self._read_int(stream, current_pos, base_offset_size)
+                current_pos += base_offset_size
+
+            if current_pos + 2 > len(stream): break
             extent_count = struct.unpack('>H', stream[current_pos : current_pos+2])[0]
             current_pos += 2
-            if extent_count > 0:
-                offset = self._read_int(stream, current_pos, offset_size)
+            
+            loc = ItemLocation(item_id)
+            for __ in range(extent_count):
+                if (version == 1 or version == 2) and index_size > 0:
+                     if current_pos + index_size > len(stream): break
+                     current_pos += index_size # Skip extent_index
+
+                extent_offset = self._read_int(stream, current_pos, offset_size)
                 current_pos += offset_size
-                length = self._read_int(stream, current_pos, length_size)
+
+                extent_length = self._read_int(stream, current_pos, length_size)
                 current_pos += length_size
-                self.locations.append(ItemLocation(item_id, offset, length))
+                
+                loc.extents.append((base_offset + extent_offset, extent_length))
+            self.locations.append(loc)
+
     def _read_int(self, data, pos, size):
+        if pos + size > len(data): return 0
+        if size == 0: return 0
         if size == 1: return data[pos]
         if size == 2: return struct.unpack('>H', data[pos:pos+2])[0]
         if size == 4: return struct.unpack('>I', data[pos:pos+4])[0]
         if size == 8: return struct.unpack('>Q', data[pos:pos+8])[0]
         return 0
+
+# --- All other classes below remain unchanged ---
 
 class ItemInfoEntry:
     def __init__(self, item_id, item_type, item_name):
@@ -61,12 +111,10 @@ class ItemInfoBox(Box):
         self.entries: list[ItemInfoEntry] = []
         self._parse_entries()
     def _parse_entries(self):
-        # Assumes version 0 of 'iinf' box
         if len(self.raw_data) < 6: return
         item_count = struct.unpack('>H', self.raw_data[4:6])[0]
         for infe_box in self.children:
             if infe_box.type == 'infe':
-                # Assumes version 2 of 'infe' box
                 if len(infe_box.raw_data) < 12: continue
                 item_id = struct.unpack('>H', infe_box.raw_data[4:6])[0]
                 item_type = infe_box.raw_data[8:12].decode('ascii').strip('\x00')
@@ -80,12 +128,10 @@ class PrimaryItemBox(Box):
         self.item_id: int = 0
         self._parse_item_id()
     def _parse_item_id(self):
-        # Assumes version 0 of 'pitm' box
         if len(self.raw_data) < 6: return
         self.item_id = struct.unpack('>H', self.raw_data[4:6])[0]
 
 class ImageSpatialExtentsBox(Box):
-    """'ispe' box, contains image dimensions."""
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         super().__init__(size, box_type, offset, raw_data)
         self.image_width = struct.unpack('>I', self.raw_data[4:8])[0]
@@ -94,7 +140,6 @@ class ImageSpatialExtentsBox(Box):
         return f"<ImageSpatialExtentsBox width={self.image_width} height={self.image_height}>"
 
 class ItemPropertyAssociationEntry:
-    """Helper class for an entry in the 'ipma' box."""
     def __init__(self, item_id, association_count):
         self.item_id = item_id
         self.association_count = association_count
@@ -103,7 +148,6 @@ class ItemPropertyAssociationEntry:
         return f"<ItemPropertyAssociationEntry item_id={self.item_id} associations={self.associations}>"
 
 class ItemPropertyAssociationBox(Box):
-    """'ipma' box, maps items to their properties."""
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         super().__init__(size, box_type, offset, raw_data)
         self.entries: dict[int, ItemPropertyAssociationEntry] = {}
@@ -138,31 +182,21 @@ class ItemPropertyAssociationBox(Box):
             self.entries[item_id] = entry
 
 class ItemPropertyContainerBox(Box):
-    """'ipco' box. Just a container for property boxes like 'ispe'."""
     pass
 
 class ItemPropertiesBox(Box):
-    """'iprp' box. Container for 'ipco' and 'ipma'."""
     @property
     def ipco(self) -> ItemPropertyContainerBox | None:
-        """Finds and returns the 'ipco' child box if it exists."""
         for child in self.children:
-            if isinstance(child, ItemPropertyContainerBox):
-                return child
+            if isinstance(child, ItemPropertyContainerBox): return child
         return None
-
     @property
     def ipma(self) -> ItemPropertyAssociationBox | None:
-        """Finds and returns the 'ipma' child box if it exists."""
         for child in self.children:
-            if isinstance(child, ItemPropertyAssociationBox):
-                return child
+            if isinstance(child, ItemPropertyAssociationBox): return child
         return None
 
-# --- NEW classes for Task 3.1 ('iref') ---
-
 class ItemReferenceEntry:
-    """Helper class for a single reference in the 'iref' box."""
     def __init__(self, from_id, to_ids):
         self.from_item_id = from_id
         self.to_item_ids = to_ids
@@ -170,54 +204,36 @@ class ItemReferenceEntry:
         return f"<ItemReferenceEntry from={self.from_item_id} to={self.to_item_ids}>"
 
 class ItemReferenceBox(Box):
-    """'iref' box, describes relationships between items."""
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         super().__init__(size, box_type, offset, raw_data)
         self.references: dict[int, list[int]] = {}
         self._parse_references()
-
     def _parse_references(self):
         stream = self.raw_data
         version_flags = struct.unpack('>I', stream[:4])[0]
         version = version_flags >> 24
         pos = 4
-        
         item_id_size = 4 if version == 1 else 2
-
-        # The 'iref' box contains one or more SingleItemTypeReferenceBox(es)
-        # We parse them in a loop until we run out of data.
         while pos < len(stream):
-            # Each sub-box has its own size and type
             if pos + 8 > len(stream): break
             ref_box_size = struct.unpack('>I', stream[pos:pos+4])[0]
-            ref_box_type = stream[pos+4:pos+8].decode('ascii')
-            
             if pos + ref_box_size > len(stream): break
-
-            # We are interested in 'grid', but could parse others like 'thmb'
-            # The structure is the same for SingleItemTypeReferenceBox
-            
             if item_id_size == 4:
                 from_item_id = struct.unpack('>I', stream[pos+8:pos+12])[0]
                 ref_count_pos = pos + 12
-            else: # item_id_size == 2
+            else:
                 from_item_id = struct.unpack('>H', stream[pos+8:pos+10])[0]
                 ref_count_pos = pos + 10
-                
             reference_count = struct.unpack('>H', stream[ref_count_pos:ref_count_pos+2])[0]
-            
             to_ids_pos = ref_count_pos + 2
             to_item_ids = []
             for _ in range(reference_count):
                 if to_ids_pos + item_id_size > len(stream): break
                 if item_id_size == 4:
                     to_id = struct.unpack('>I', stream[to_ids_pos:to_ids_pos+4])[0]
-                else: # item_id_size == 2
+                else:
                     to_id = struct.unpack('>H', stream[to_ids_pos:to_ids_pos+2])[0]
                 to_item_ids.append(to_id)
                 to_ids_pos += item_id_size
-            
             self.references[from_item_id] = to_item_ids
-            
-            # Move to the next reference box within 'iref'
             pos += ref_box_size

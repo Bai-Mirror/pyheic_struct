@@ -1,39 +1,54 @@
 # pyheic_struct/main.py
 
 from heic_file import HEICFile
+import os
 
-def analyze_file(filename: str):
+def analyze_and_reconstruct(filename: str):
     print(f"--- Analyzing {filename} ---")
+    
+    # 检查文件是否存在
+    if not os.path.exists(filename):
+        print(f"Error: File not found at {filename}")
+        print("="*40 + "\n")
+        return
+
     heic_file = HEICFile(filename)
 
-    # List all available items in the file
-    heic_file.list_items()
-
-    # Get the ID of the primary image
-    primary_id = heic_file.get_primary_item_id()
-    if primary_id:
-        print(f"The primary item ID is: {primary_id}")
-
-        # Get the primary image dimensions
-        size = heic_file.get_image_size(primary_id)
-        if size:
-            print(f"Primary image dimensions (WxH): {size[0]} x {size[1]}")
+    # 重建主图像
+    reconstructed_image = heic_file.reconstruct_primary_image()
+    
+    if reconstructed_image:
+        # 获取不带扩展名的基本文件名
+        base_filename = os.path.splitext(filename)[0]
         
-        # --- Use our new feature! ---
-        grid_layout = heic_file.get_grid_layout()
-        if grid_layout:
-            print(f"Primary image is a grid composed of these item IDs: {grid_layout}")
-            # Optional: Get size of the first tile to see the difference
-            first_tile_id = grid_layout[0]
-            tile_size = heic_file.get_image_size(first_tile_id)
-            if tile_size:
-                print(f"  - Size of the first tile (ID {first_tile_id}): {tile_size[0]} x {tile_size[1]}")
+        # 1. 保存为高质量的有损格式 (JPEG)
+        try:
+            jpeg_filename = f"{base_filename}_reconstructed.jpg"
+            reconstructed_image.save(jpeg_filename, "JPEG", quality=95)
+            print(f"Successfully saved lossy JPEG to: {jpeg_filename}")
+        except Exception as e:
+            print(f"Could not save JPEG file: {e}")
+
+        # 2. 保存为无损格式 (PNG)
+        try:
+            png_filename = f"{base_filename}_reconstructed.png"
+            reconstructed_image.save(png_filename, "PNG")
+            print(f"Successfully saved lossless PNG to: {png_filename}")
+        except Exception as e:
+            print(f"Could not save PNG file: {e}")
+            
+    else:
+        print("Failed to reconstruct image.")
 
     print("\n" + "="*40 + "\n")
 
 def main():
-    analyze_file('apple.HEIC')
-    analyze_file('samsung.heic')
+    # 确保文件路径正确
+    apple_file = 'apple.HEIC'
+    samsung_file = 'samsung.heic'
+    
+    analyze_and_reconstruct(apple_file)
+    analyze_and_reconstruct(samsung_file)
 
 if __name__ == "__main__":
     main()
