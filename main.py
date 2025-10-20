@@ -40,6 +40,23 @@ def analyze_and_reconstruct(filename: str):
     else:
         print("Failed to reconstruct image.")
 
+    # 3. 尝试提取并保存缩略图
+    thumbnail_data = heic_file.get_thumbnail_data()
+    if thumbnail_data:
+        try:
+            # 缩略图数据通常是 JPEG 或 HEIC 格式
+            # 我们先假设它是 JPEG 并以此后缀保存
+            thumb_filename = f"{base_filename}_thumbnail.jpg"
+            with open(thumb_filename, "wb") as f_thumb:
+                f_thumb.write(thumbnail_data)
+            print(f"Successfully saved thumbnail data to: {thumb_filename}")
+            print(f" (Note: This file might be a JPEG or a small HEIC. Try opening it.)")
+        except Exception as e:
+            print(f"Could not save thumbnail file: {e}")
+    else:
+        print("No thumbnail data found or extracted.")
+
+
     print("\n" + "="*40 + "\n")
 
 def main():

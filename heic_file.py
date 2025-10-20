@@ -95,7 +95,11 @@ class HEICFile:
         primary_id = self.get_primary_item_id()
         if not primary_id: return None
         if not self._iref_box: return None
-        return self._iref_box.references.get(primary_id)
+        
+        # 'dimg' (derived image) 是网格布局的标准引用类型
+        if 'dimg' in self._iref_box.references:
+            return self._iref_box.references['dimg'].get(primary_id)
+        return None
 
     def get_image_size(self, item_id: int) -> tuple[int, int] | None:
         if not (self._iprp_box and self._iprp_box.ipma and self._iprp_box.ipco): return None
@@ -153,3 +157,47 @@ class HEICFile:
                 f.seek(offset)
                 return f.read()
         return None
+
+    def get_thumbnail_data(self) -> bytes | None:
+        """
+        查找并提取缩略图图像数据 (如果存在)。
+        它会查找一个 'iref' 盒子，其中包含 'thmb' (thumbnail) 引用。
+        """
+        print("Attempting to extract thumbnail data...")
+        primary_id = self.get_primary_item_id()
+        if not primary_id:
+            print("Error: Could not determine primary item ID.")
+            return None
+        
+        if not self._iref_box:
+            print("Info: No 'iref' box found, cannot search for thumbnail.")
+            return None
+
+        # 检查 'thmb' (thumbnail) 引用类型是否存在
+        if 'thmb' not in self._iref_box.references:
+            print("Info: No 'thmb' references found in 'iref' box.")
+            return None
+        
+        # 检查主图像是否有与之关联的缩略图
+        if primary_id not in self._iref_box.references['thmb']:
+            print(f"Info: Primary item ID {primary_id} has no 'thmb' reference.")
+            return None
+
+        thumbnail_ids = self._iref_box.references['thmb'][primary_id]
+        if not thumbnail_ids:
+            print(f"Info: Primary item ID {primary_id} has 'thmb' reference, but no target IDs.")
+            return None
+
+        # 获取第一个缩略图 ID
+        thumbnail_id = thumbnail_ids[0]
+        print(f"Found thumbnail reference: Primary ID {primary_id} -> Thumbnail ID {thumbnail_id}")
+        
+        # 使用现有的 get_item_data 来提取它
+        thumbnail_data = self.get_item_data(thumbnail_id)
+        
+        if thumbnail_data:
+            print(f"Successfully extracted thumbnail data (Item ID {thumbnail_id}).")
+            return thumbnail_data
+        else:
+            print(f"Error: Failed to get data for thumbnail item ID {thumbnail_id}.")
+            return None

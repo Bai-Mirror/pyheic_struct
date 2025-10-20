@@ -206,8 +206,10 @@ class ItemReferenceEntry:
 class ItemReferenceBox(Box):
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         super().__init__(size, box_type, offset, raw_data)
-        self.references: dict[int, list[int]] = {}
+        # 结构: {'thmb': {from_id: [to_id, ...]}, 'dimg': {from_id: [to_id, ...]}}
+        self.references: dict[str, dict[int, list[int]]] = {}
         self._parse_references()
+        
     def _parse_references(self):
         stream = self.raw_data
         version_flags = struct.unpack('>I', stream[:4])[0]
@@ -215,17 +217,29 @@ class ItemReferenceBox(Box):
         pos = 4
         item_id_size = 4 if version == 1 else 2
         while pos < len(stream):
-            if pos + 8 > len(stream): break
+            if pos + 8 > len(stream): break # 需要空间来读取 size 和 type
             ref_box_size = struct.unpack('>I', stream[pos:pos+4])[0]
+            ref_box_type = stream[pos+4:pos+8].decode('ascii', errors='ignore')
+            
             if pos + ref_box_size > len(stream): break
+            
+            # 为这种引用类型创建字典 (如果它还不存在)
+            if ref_box_type not in self.references:
+                self.references[ref_box_type] = {}
+            
             if item_id_size == 4:
+                if pos + 12 > len(stream): break
                 from_item_id = struct.unpack('>I', stream[pos+8:pos+12])[0]
                 ref_count_pos = pos + 12
             else:
+                if pos + 10 > len(stream): break
                 from_item_id = struct.unpack('>H', stream[pos+8:pos+10])[0]
                 ref_count_pos = pos + 10
+                
+            if ref_count_pos + 2 > len(stream): break
             reference_count = struct.unpack('>H', stream[ref_count_pos:ref_count_pos+2])[0]
             to_ids_pos = ref_count_pos + 2
+            
             to_item_ids = []
             for _ in range(reference_count):
                 if to_ids_pos + item_id_size > len(stream): break
@@ -235,5 +249,6 @@ class ItemReferenceBox(Box):
                     to_id = struct.unpack('>H', stream[to_ids_pos:to_ids_pos+2])[0]
                 to_item_ids.append(to_id)
                 to_ids_pos += item_id_size
-            self.references[from_item_id] = to_item_ids
+                
+            self.references[ref_box_type][from_item_id] = to_item_ids
             pos += ref_box_size
