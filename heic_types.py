@@ -231,16 +231,36 @@ class ItemInfoEntryBox(FullBox):
                 self.item_name = stream[pos:name_end].decode('utf-8', errors='ignore')
                 
             elif self.version == 2:
-                # --- START FIX 3 (Parser) ---
-                # 恢复为原始顺序 (ID, ProtIdx, Type) 以正确 *读取* samsung.heic
                 self.item_id = struct.unpack('>I', stream[pos:pos+4])[0]
                 pos += 4
-                self.item_protection_index = struct.unpack('>H', stream[pos:pos+2])[0]
-                pos += 2
-                self.item_type = stream[pos:pos+4].decode('ascii').strip('\x00')
-                pos += 4
-                # --- END FIX 3 ---
-                
+
+                remaining = len(stream) - pos
+                if remaining >= 6:
+                    candidate_protection = struct.unpack('>H', stream[pos:pos+2])[0]
+                    candidate_type = stream[pos+2:pos+6]
+
+                    if candidate_protection <= 0x00FF and b'\x00' not in candidate_type:
+                        # 标准顺序: 2 字节保护索引 + 4 字节类型
+                        self.item_protection_index = candidate_protection
+                        pos += 2
+                        type_bytes = candidate_type
+                        pos += 4
+                    else:
+                        # 三星文件: 直接写入类型 (如 'hvc1')，缺少保护索引
+                        self.item_protection_index = 0
+                        type_bytes = stream[pos:pos+4]
+                        pos += 4
+                elif remaining >= 4:
+                    # 某些三星文件缺少 2 字节的保护索引字段, 直接紧跟 4 字节类型
+                    self.item_protection_index = 0
+                    type_bytes = stream[pos:pos+4]
+                    pos += 4
+                else:
+                    # 无法获得完整的 4 字节类型
+                    type_bytes = b''
+
+                self.item_type = type_bytes.decode('ascii', errors='ignore').strip('\x00')
+
                 name_end = stream.find(b'\x00', pos)
                 if name_end == -1: name_end = len(stream)
                 self.item_name = stream[pos:name_end].decode('utf-8', errors='ignore')
@@ -274,12 +294,10 @@ class ItemInfoEntryBox(FullBox):
             content.write(item_name_bytes_to_write)
             
         elif self.version == 2:
-            # --- START FIX 4 (Builder) ---
-            # 保持为苹果顺序 (ID, Type, ProtIdx) 以正确 *写入* 兼容文件
             content.write(struct.pack('>I', self.item_id))
-            content.write(self.item_type.encode('ascii').ljust(4, b'\x00'))
             content.write(struct.pack('>H', self.item_protection_index))
-            # --- END FIX 4 ---
+            # item_type 必须是 4 字节的 4CC，若不足则以 NUL 填充
+            content.write(self.item_type.encode('ascii', errors='ignore')[:4].ljust(4, b'\x00'))
             content.write(item_name_bytes_to_write)
             
         elif self.version == 3:
