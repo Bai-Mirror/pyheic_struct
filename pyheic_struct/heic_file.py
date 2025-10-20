@@ -1,7 +1,6 @@
 import os
 import math
 import pillow_heif
-from io import BytesIO
 from dataclasses import dataclass
 from PIL import Image
 
@@ -12,9 +11,7 @@ from .heic_types import (
     ImageSpatialExtentsBox, ItemReferenceBox, ItemInfoEntryBox,
     _read_int
 )
-from .handlers.base_handler import VendorHandler
-from .handlers.apple_handler import AppleHandler
-from .handlers.samsung_handler import SamsungHandler
+from .handlers import VendorHandler, resolve_handler
 
 @dataclass
 class Grid:
@@ -80,6 +77,32 @@ class HEICFile:
             if box.type == 'mdat':
                 return box
         return None
+
+    def get_compatible_brands(self) -> set[str]:
+        """
+        Return the normalized set of brands listed in the `ftyp` box.
+        """
+        if not self._ftyp_box or not self._ftyp_box.raw_data:
+            return set()
+
+        raw = self._ftyp_box.raw_data
+        brands: set[str] = set()
+
+        if len(raw) >= 4:
+            primary = raw[:4].decode("ascii", errors="ignore").strip("\x00").lower()
+            if primary:
+                brands.add(primary)
+
+        # Skip 4-byte minor version
+        for offset in range(8, len(raw), 4):
+            chunk = raw[offset:offset + 4]
+            if len(chunk) < 4:
+                break
+            brand = chunk.decode("ascii", errors="ignore").strip("\x00").lower()
+            if brand:
+                brands.add(brand)
+
+        return brands
 
     def _remove_box_recursive(self, box_type: str, box_list: list[Box]) -> bool:
         """Internal helper used by `remove_box_by_type`."""
@@ -344,12 +367,7 @@ class HEICFile:
         for entry in self._iinf_box.entries: print(f"  - {entry}")
 
     def _detect_vendor(self):
-        if self._ftyp_box:
-            compatible_brands = self._ftyp_box.raw_data[4:].decode('ascii', errors='ignore')
-            if 'samsung' in compatible_brands.lower(): self.handler = SamsungHandler()
-            elif 'apple' in compatible_brands.lower() or 'MiHB' in compatible_brands: self.handler = AppleHandler()
-            else: self.handler = VendorHandler()
-        else: self.handler = VendorHandler()
+        self.handler = resolve_handler(self)
 
     def get_item_data(self, item_id: int) -> bytes | None:
         if not self._iloc_box:
@@ -389,14 +407,12 @@ class HEICFile:
         return b''.join(data_chunks)
 
     def get_motion_photo_data(self) -> bytes | None:
-        if not self.handler: self._detect_vendor()
-        offset = self.handler.find_motion_photo_offset(self)
-        if offset is not None:
-            print("Found motion photo data at offset.")
-            with open(self.filepath, 'rb') as f:
-                f.seek(offset)
-                return f.read()
-        return None
+        if not self.handler:
+            self._detect_vendor()
+        data = self.handler.extract_motion_video(self)
+        if data is not None:
+            print("Found motion photo data via vendor handler.")
+        return data
 
     def get_thumbnail_data(self) -> bytes | None:
         print("Attempting to extract thumbnail data...")
