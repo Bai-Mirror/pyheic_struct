@@ -1,5 +1,3 @@
-# pyheic_struct/parser.py
-
 import struct
 from typing import List, BinaryIO
 from io import BytesIO
@@ -8,7 +6,7 @@ from .base import Box, FullBox
 from .heic_types import (
     ItemLocationBox, PrimaryItemBox, ItemInfoBox, ItemPropertiesBox,
     ItemPropertyContainerBox, ItemPropertyAssociationBox, ImageSpatialExtentsBox,
-    ItemReferenceBox, ItemInfoEntryBox # <-- 导入新的 'infe' 盒
+    ItemReferenceBox, ItemInfoEntryBox
 )
 
 BOX_TYPE_MAP = {
@@ -20,13 +18,12 @@ BOX_TYPE_MAP = {
     'ipma': ItemPropertyAssociationBox,
     'ispe': ImageSpatialExtentsBox,
     'iref': ItemReferenceBox,
-    'infe': ItemInfoEntryBox, # <-- 注册新的 'infe' 盒
+    'infe': ItemInfoEntryBox,
 }
 
-# 'iref' is also a container.
-# 'iinf' IS a container (它包含 'infe' 盒)
+# Boxes treated as containers (their payload should be parsed recursively).
 CONTAINER_BOXES = {'meta', 'moov', 'trak', 'iprp', 'ipco', 'dinf', 'fiinf', 'ipro', 'iinf', 'iref'}
-# 几乎所有语义盒都是 FullBox
+# Boxes that should default to the `FullBox` implementation.
 FULL_BOXES = {'meta', 'hdlr', 'pitm', 'iinf', 'iloc', 'ipma', 'ispe', 'iref', 'infe'}
 
 def parse_boxes(stream: BinaryIO, max_size: int) -> List[Box]:
@@ -75,28 +72,23 @@ def parse_boxes(stream: BinaryIO, max_size: int) -> List[Box]:
             parse_size = len(box.raw_data)
             
             if box.is_full_box:
-                # 跳过 4 字节的 version/flags
+                # Skip the 4-byte version/flags prefix when recursing.
                 if parse_size >= 4:
                     child_stream.read(4)
                     parse_size -= 4
-                
-                # --- START FIX ---
-                # 'iinf' 盒在 version/flags 之后还有一个 item_count 字段
-                # 我们必须在解析它的子盒之前跳过它
+
                 if box.type == 'iinf':
                     if box.version == 0:
                         if parse_size >= 2:
-                            child_stream.read(2) # 跳过 16-bit item_count
+                            child_stream.read(2)
                             parse_size -= 2
                     else:
                         if parse_size >= 4:
-                            child_stream.read(4) # 跳过 32-bit item_count
+                            child_stream.read(4)
                             parse_size -= 4
-                # --- END FIX ---
                 
             box.children = parse_boxes(child_stream, parse_size)
             
-        # 调用钩子
         box._post_parse_initialization()
 
         boxes.append(box)

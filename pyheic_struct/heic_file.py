@@ -1,8 +1,5 @@
-# pyheic_struct/heic_file.py
-
 import os
 import math
-# 1. 导入新的库
 import pillow_heif
 from io import BytesIO
 from dataclasses import dataclass
@@ -27,6 +24,8 @@ class Grid:
     output_height: int
 
 class HEICFile:
+    """High-level accessor for parsed HEIC/HEIF structures."""
+
     def __init__(self, filepath: str):
         self.filepath = filepath
         pillow_heif.register_heif_opener()
@@ -38,7 +37,7 @@ class HEICFile:
         self._iprp_box: ItemPropertiesBox | None = None
         self._iref_box: ItemReferenceBox | None = None
         self.handler: VendorHandler | None = None
-        self.boxes: list[Box] = [] # 顶层盒子
+        self.boxes: list[Box] = []  # Top-level boxes
 
         try:
             with open(self.filepath, 'rb') as f:
@@ -51,7 +50,7 @@ class HEICFile:
             raise
 
     def _find_essential_boxes(self, boxes: list[Box]):
-        """在解析树中查找关键盒子的快捷方式"""
+        """Populate shortcut pointers for commonly used boxes."""
         for box in boxes:
             if isinstance(box, ItemLocationBox): self._iloc_box = box
             if isinstance(box, ItemInfoBox): self._iinf_box = box
@@ -61,10 +60,8 @@ class HEICFile:
             if box.type == 'ftyp': self._ftyp_box = box
             if box.children: self._find_essential_boxes(box.children)
 
-    # --- 辅助方法 (用于修改和构建) ---
-
     def find_box(self, box_type: str, root_box_list: list[Box] | None = None) -> Box | None:
-        """递归查找第一个匹配类型的盒子"""
+        """Recursively locate the first box with the requested fourcc."""
         if root_box_list is None:
             root_box_list = self.boxes
             
@@ -78,14 +75,14 @@ class HEICFile:
         return None
 
     def get_mdat_box(self) -> Box | None:
-        """获取顶层的 'mdat' 盒"""
+        """Return the top-level `mdat` box, if present."""
         for box in self.boxes:
             if box.type == 'mdat':
                 return box
         return None
 
     def _remove_box_recursive(self, box_type: str, box_list: list[Box]) -> bool:
-        """Helper for remove_box_by_type"""
+        """Internal helper used by `remove_box_by_type`."""
         for i, box in enumerate(box_list):
             if box.type == box_type:
                 box_list.pop(i)
@@ -96,19 +93,14 @@ class HEICFile:
         return False
 
     def remove_box_by_type(self, box_type: str) -> bool:
-        """递归查找并移除第一个匹配类型的盒子"""
+        """Remove the first box matching `box_type`, searching recursively."""
         return self._remove_box_recursive(box_type, self.boxes)
 
-    # --- START V16 FIX ---
     def remove_item_by_id(self, item_id_to_remove: int):
-        """
-        (V16 - 垃圾回收版) 
-        彻底从 iinf, iloc, ipma, iref 中删除一个 Item ID，
-        并从 ipco 中删除孤立的属性，然后重写所有剩余的 ipma 索引。
-        """
+        """Fully remove an item from iinf/iloc/ipma/iref and clean orphaned properties."""
         print(f"Attempting to remove Item ID {item_id_to_remove} from all references (V16)...")
-        
-        # 1. 从 iinf (Item Info) 中删除
+
+        # Update iinf metadata
         if self._iinf_box:
             self._iinf_box.children = [
                 c for c in self._iinf_box.children 
@@ -120,7 +112,7 @@ class HEICFile:
             ]
             print(f"  - Removed from 'iinf' box.")
 
-        # 2. 从 iloc (Item Location) 中删除
+        # Update iloc entries
         if self._iloc_box:
             self._iloc_box.locations = [
                 loc for loc in self._iloc_box.locations 
@@ -128,7 +120,7 @@ class HEICFile:
             ]
             print(f"  - Removed from 'iloc' box.")
 
-        # 3. (新) 从 iref (Item Reference) 中删除
+        # Update iref relationships
         if self._iref_box:
             for i in range(len(self._iref_box.children) - 1, -1, -1):
                 ref_box = self._iref_box.children[i]
@@ -153,7 +145,7 @@ class HEICFile:
                     ]
             print(f"  - Cleaned 'iref.references' of to_id {item_id_to_remove}.")
 
-        # 4. 从 ipma 和 ipco (属性) 中删除
+        # Update property associations and definitions
         if self._iprp_box and self._iprp_box.ipma and self._iprp_box.ipco:
             ipma = self._iprp_box.ipma
             ipco = self._iprp_box.ipco
@@ -162,18 +154,17 @@ class HEICFile:
                 print(f"  - Item {item_id_to_remove} not in 'ipma'. No properties to clean.")
                 return 
             
-            # 4a. 找到要删除的属性索引 (1-based)
+            # Identify property indices referenced exclusively by the removed item.
             props_to_remove = {
                 assoc.property_index
                 for assoc in ipma.entries[item_id_to_remove].associations
             }
             
-            # 4b. 从 ipma 中删除该 Item
+            # Remove the item entry itself.
             del ipma.entries[item_id_to_remove]
             print(f"  - Removed Item {item_id_to_remove} from 'ipma'.")
 
-            # 4c. 确定哪些属性是“孤儿”
-            # (即，它们在 props_to_remove 中，但*不在*任何*剩余*的 item 关联中)
+            # Determine which properties are now unused.
             all_remaining_props = set()
             for entry in ipma.entries.values():
                 all_remaining_props.update(
@@ -188,16 +179,12 @@ class HEICFile:
 
             print(f"  - Found orphaned properties to remove from 'ipco': {orphaned_props}")
             
-            # 4d. 创建一个“重映射表”
-            # 我们从后往前遍历，以安全地删除
-            # (索引是 1-based, 但列表是 0-based)
+            # Remove orphaned properties from `ipco`, iterating from the end to keep indices valid.
             orphaned_indices_0based = sorted([p - 1 for p in orphaned_props], reverse=True)
             
-            # 原始 1-based 索引 -> 新 1-based 索引
-            remap_table = {} 
+            remap_table = {}
             original_prop_count = len(ipco.children)
             
-            # 4e. 从 'ipco.children' 列表中删除孤儿
             for index_0 in orphaned_indices_0based:
                 if 0 <= index_0 < len(ipco.children):
                     removed_prop = ipco.children.pop(index_0)
@@ -205,8 +192,6 @@ class HEICFile:
                 else:
                     print(f"    - Warning: Orphaned index {index_0+1} out of bounds for 'ipco'.")
 
-            # 4f. 构建重映射表
-            # (只有在 ipco 实际发生变化时才需要)
             new_prop_count = len(ipco.children)
             if new_prop_count != original_prop_count:
                 print("  - Re-indexing 'ipma' associations...")
@@ -220,7 +205,6 @@ class HEICFile:
                         current_new_index += 1
                     current_old_index += 1
                 
-                # 4g. 应用重映射
                 for item_id, entry in ipma.entries.items():
                     new_associations = []
                     for assoc in entry.associations:
@@ -229,19 +213,15 @@ class HEICFile:
                             assoc.property_index = remap_table[old_prop_index]
                             new_associations.append(assoc)
                         # else:
-                        #   该属性已被删除 (不应发生，因为我们只删除了孤儿)
+                        #   The property was removed entirely (should not occur).
                     
                     # print(f"    - Item {item_id} associations: {entry.associations} -> {new_associations}")
                     entry.associations = new_associations
                 print("  - 'ipma' re-indexing complete.")
             else:
                  print("  - No 'ipma' re-indexing needed.")
-    # --- END V16 FIX ---
-
     def set_content_identifier(self, new_content_id: str) -> bool:
-        """
-        (FIXED) 在 'iinf' 盒中查找主图像的 'infe' 盒，并设置其 item_name
-        """
+        """Locate the primary `infe` entry and update its item name with a UUID."""
         primary_id = self.get_primary_item_id()
         if not primary_id:
             print("Error: Cannot find primary item ID.")
@@ -252,9 +232,6 @@ class HEICFile:
             return False
             
         print(f"Searching for 'infe' box with primary_id = {primary_id}")
-        
-        # --- START FIX ---
-        # 侦测我们日志中看到的 "shifted ID" 格式
         
         target_id = primary_id
         found_ids = [box.item_id for box in self._iinf_box.children if isinstance(box, ItemInfoEntryBox)]
@@ -269,16 +246,14 @@ class HEICFile:
                 print(f"Error: Could not find primary ID {primary_id} OR shifted ID {shifted_id}.")
                 print(f"Available 'infe' item IDs found were: {found_ids}")
                 return False
-        # --- END FIX ---
-            
-        # 'iinf' 盒的子盒是 'infe' 盒
+
+        # Update both the parsed box and the cached entry representation.
         for box in self._iinf_box.children:
             if isinstance(box, ItemInfoEntryBox):
                 if box.item_id == target_id:
                     print(f"Success: Found 'infe' box for target ID {target_id}. Setting item_name...")
                     box.item_name = new_content_id
                     
-                    # 同时更新 self._iinf_box.entries 中的数据以保持一致
                     for entry in self._iinf_box.entries:
                         if entry.item_id == target_id:
                             entry.name = new_content_id
@@ -288,12 +263,8 @@ class HEICFile:
         print(f"Error: Logic failed to find 'infe' box for target ID {target_id} even after check.")
         return False
 
-    # --- 现有的只读方法 (无需修改) ---
-
     def reconstruct_primary_image(self) -> Image.Image | None:
-        """
-        使用 pillow-heif 重建主图像，它能自动处理网格图像。
-        """
+        """Reconstruct the primary image using pillow-heif (handles grid tiles)."""
         try:
             print("Reconstructing primary image using pillow-heif...")
             image = Image.open(self.filepath)
@@ -326,11 +297,10 @@ class HEICFile:
         if not primary_id: return None
         if not self._iref_box: return None
         
-        # 尝试直接匹配
         if 'dimg' in self._iref_box.references and primary_id in self._iref_box.references['dimg']:
             return self._iref_box.references['dimg'].get(primary_id)
         
-        # 尝试匹配 "shifted" ID
+        # Fall back to Samsung-style shifted IDs.
         shifted_id = primary_id << 16
         if 'dimg' in self._iref_box.references and shifted_id in self._iref_box.references['dimg']:
              print("Info: Using shifted primary ID to find grid layout.")
@@ -343,17 +313,14 @@ class HEICFile:
         
         target_id = item_id
         if item_id not in self._iprp_box.ipma.entries:
-            # 尝试 "shifted" ID
             shifted_id = item_id << 16
             if shifted_id in self._iprp_box.ipma.entries:
                 target_id = shifted_id
             else:
-                 # 尝试 "unshifted" ID (以防 item_id 本身就是 shifted 的)
                  unshifted_id = item_id & 0x0000FFFF
                  if unshifted_id in self._iprp_box.ipma.entries:
                      target_id = unshifted_id
                  else:
-                    # print(f"Warning: Cannot find size associations for item ID {item_id} or variants.")
                     return None
         
         item_associations = self._iprp_box.ipma.entries[target_id].associations
@@ -393,15 +360,13 @@ class HEICFile:
         location = next((loc for loc in self._iloc_box.locations if loc.item_id == target_id), None)
         
         if not location:
-            # 尝试检查 "shifted" ID
             shifted_id = item_id << 16
             location = next((loc for loc in self._iloc_box.locations if loc.item_id == shifted_id), None)
             if location:
                 print(f"Info: Located item {item_id} using shifted ID {shifted_id} in 'iloc'.")
                 target_id = shifted_id
-            
+        
         if not location and (item_id & 0xFFFF0000):
-            # 尝试反向检查 (如果传入的 ID 已经是 shifted 的)
             unshifted_id = item_id & 0x0000FFFF
             location = next((loc for loc in self._iloc_box.locations if loc.item_id == unshifted_id), None)
             if location:
@@ -450,7 +415,6 @@ class HEICFile:
         
         target_id = primary_id
         if primary_id not in self._iref_box.references['thmb']:
-            # Lпробуйте проверить "shifted" ID
             shifted_primary_id = primary_id << 16
             if shifted_primary_id not in self._iref_box.references['thmb']:
                 print(f"Info: Primary item ID {primary_id} (or shifted) has no 'thmb' reference.")

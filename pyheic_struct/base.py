@@ -5,17 +5,15 @@ import struct
 from io import BytesIO
 
 class Box:
-    """
-    Represents a generic ISOBMFF box.
-    Now supports finding children and building (writing) data back.
-    """
+    """Generic ISOBMFF box supporting hierarchical parsing and rebuilds."""
+
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         self.size = size
         self.type = box_type
         self.offset = offset
         self.raw_data = raw_data
         self.children: List['Box'] = []
-        self.is_full_box = False # 默认不是 FullBox
+        self.is_full_box = False  # Flag toggled by FullBox subclasses
 
     def __repr__(self) -> str:
         return f"<Box '{self.type}' size={self.size} offset={self.offset}>"
@@ -48,17 +46,12 @@ class Box:
         return header.getvalue()
 
     def build_content(self) -> bytes:
-        """
-        序列化此盒的 *内容* (不包括头部)。
-        对于一个通用的容器盒 (container boxes)，它会递归构建所有子盒。
-        """
+        """Serialise the box payload (children included, header excluded)."""
         if not self.children:
-            # 对于一个没有子盒的简单数据盒 (如 ftyp, mdat, 或未解析的盒)
-            # 只需返回它持有的原始数据。
+            # Leaf boxes expose their stored payload verbatim.
             return self.raw_data
         
-        # 对于一个容器盒 (如 'meta', 'iprp', 'ipco')
-        # 递归构建每一个子盒 (完整的，包括头部) 并拼接它们
+        # Container boxes rebuild each child (including headers) in order.
         content_stream = BytesIO()
         for child in self.children:
             child_data = child.build_box()
@@ -67,22 +60,17 @@ class Box:
 
 
     def build_box(self) -> bytes:
-        """
-        构建完整的盒 (头部 + 内容)，并返回其二进制数据。
-        """
-        # 1. "自底向上" 构建内容
+        """Construct the full box (header + payload) and return its bytes."""
         content_data = self.build_content()
         
-        # 2. 构建头部
         header_data = self.build_header(len(content_data))
         
-        # 3. 更新 self.size 属性 (8字节标准头 + 内容)
         self.size = len(header_data) + len(content_data)
         
         return header_data + content_data
 
     def find_box(self, box_type: str, recursive: bool = True) -> Optional['Box']:
-        """在子盒中查找指定类型的第一个盒子"""
+        """Return the first child matching `box_type`."""
         for child in self.children:
             if child.type == box_type:
                 return child
@@ -93,9 +81,8 @@ class Box:
         return None
 
 class FullBox(Box):
-    """
-    FullBox 是一种特殊的 Box，它在内容开头包含 4 字节的 version 和 flags
-    """
+    """Box variant that begins with a 4-byte version/flags header."""
+
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         super().__init__(size, box_type, offset, raw_data)
         self.is_full_box = True
@@ -104,38 +91,29 @@ class FullBox(Box):
         self._parse_full_box_header()
 
     def _parse_full_box_header(self):
-        """从 raw_data 中解析 version 和 flags"""
+        """Extract version and flags from the stored payload."""
         if len(self.raw_data) >= 4:
             version_flags = struct.unpack('>I', self.raw_data[:4])[0]
             self.version = (version_flags >> 24) & 0xFF
             self.flags = version_flags & 0xFFFFFF
         
     def build_full_box_header(self) -> bytes:
-        """构建 4 字节的 version/flags 头部"""
+        """Serialise the 4-byte version/flags prefix."""
         version_flags = (self.version << 24) | self.flags
         return struct.pack('>I', version_flags)
     
     def build_content(self) -> bytes:
-        """
-        序列化此 FullBox 的内容。
-        它首先写入 4 字节的 version/flags，然后
-        再写入子盒 (如果是容器) 或 version/flags 之后的
-        原始数据 (如果不是容器)。
-        """
+        """Serialise the FullBox payload, ensuring the header is emitted."""
         content_stream = BytesIO()
         
-        # 1. 写入 FullBox 特有的 4 字节头部
         content_stream.write(self.build_full_box_header())
         
-        # 2. 写入剩余的内容
         if not self.children:
-            # 对于一个没有子盒的简单 FullBox (如 'hdlr')
-            # 写入 self.raw_data 中 *跳过* 4 字节 v/f 之后的部分
+            # Emit the payload following the version/flags header.
             if len(self.raw_data) >= 4:
                 content_stream.write(self.raw_data[4:])
         else:
-            # 对于一个容器 FullBox (如 'meta')
-            # 递归构建每一个子盒 (与 Box.build_content 相同)
+            # Container-style FullBoxes rebuild each descendant.
             for child in self.children:
                 child_data = child.build_box()
                 content_stream.write(child_data)

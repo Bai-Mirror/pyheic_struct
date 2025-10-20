@@ -1,11 +1,9 @@
-# pyheic_struct/heic_types.py
-
 import struct
 from .base import Box, FullBox
 from io import BytesIO
-from typing import List, Optional # <-- 添加 List, Optional 导入
+from typing import List, Optional
 
-# --- 帮助函数 ---
+# Helper functions ---------------------------------------------------------
 
 def _read_int(data: bytes, pos: int, size: int) -> int:
     """Helper to read an integer of variable size."""
@@ -26,24 +24,26 @@ def _write_int(value: int, size: int) -> bytes:
     if size == 8: return struct.pack('>Q', value)
     return b''
 
-# --- ItemLocation ---
+# ItemLocation -------------------------------------------------------------
 class ItemLocation:
+    """Represents a single `iloc` entry with all associated extents."""
+
     def __init__(self, item_id):
         self.item_id = item_id
         self.data_reference_index = 0
         self.base_offset = 0
         self.construction_method = 0
         self.extent_indices = []
-        self.raw_extents = []  # (relative_offset, length)
-        # extents 存储 (absolute_offset, length)
-        self.extents = [] 
+        # Stored as (relative_offset, length)
+        self.raw_extents = []
+        # Stored as (absolute_offset, length)
+        self.extents = []
 
     def __repr__(self):
         total_length = sum(ext[1] for ext in self.extents)
         return f"<ItemLocation ID={self.item_id} extents={len(self.extents)} total_size={total_length}>"
 
-# --- ItemLocationBox ---
-# ('iloc')
+# ItemLocationBox (`iloc`) -------------------------------------------------
 class ItemLocationBox(FullBox):
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         self.locations: List[ItemLocation] = []
@@ -122,13 +122,9 @@ class ItemLocationBox(FullBox):
                 loc.extents.append((base_offset + extent_offset, extent_length))
             self.locations.append(loc)
 
-    # --- START FIX ---
     def rebuild_iloc_content(self, mdat_offset_delta: int, original_mdat_offset: int, original_mdat_size: int,
                                    meta_offset_delta: int, original_meta_offset: int, original_meta_size: int):
-        """
-        使用新的 mdat 和 meta 偏移增量 (deltas) 更新此盒的 extents，
-        并重建 self.raw_data
-        """
+        """Rebuild the `iloc` payload after `mdat` or `meta` offsets change."""
         print(f"Applying mdat delta ({mdat_offset_delta}) and meta delta ({meta_offset_delta}) to 'iloc' box...")
         content_stream = BytesIO()
         
@@ -191,9 +187,9 @@ class ItemLocationBox(FullBox):
                 new_absolute_offset = _adjust_absolute_offset(original_absolute_offset)
                 
                 if original_absolute_offset == 0:
-                    new_absolute_offset = 0 # 保持 0 偏移量
-                
-                # 最后的安全检查，防止打包负数
+                    new_absolute_offset = 0
+
+                # Guard against negative offsets produced by delta adjustments.
                 if new_absolute_offset < 0:
                     print(f"  Warning: Calculated a negative offset ({new_absolute_offset}) for item {loc.item_id}. Setting to 0.")
                     new_absolute_offset = 0
@@ -222,12 +218,11 @@ class ItemLocationBox(FullBox):
 
         self.raw_data = content_stream.getvalue()
         print(" 'iloc' box content successfully rebuilt.")
-    # --- END FIX ---
 
     def build_content(self) -> bytes:
         return self.raw_data
 
-# --- ItemInfoEntry (DataClass) ---
+# ItemInfoEntry ------------------------------------------------------------
 class ItemInfoEntry:
     def __init__(self, item_id, item_type, item_name):
         self.item_id = item_id
@@ -236,10 +231,9 @@ class ItemInfoEntry:
     def __repr__(self):
         return f"<ItemInfoEntry ID={self.item_id} type='{self.type}' name='{self.name}'>"
 
-# --- ItemInfoEntryBox ---
-# ('infe')
+# ItemInfoEntryBox (`infe`) -----------------------------------------------
 class ItemInfoEntryBox(FullBox):
-    """代表一个 'infe' 盒"""
+    """Parse and emit `infe` (ItemInfoEntryBox) structures."""
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         self.item_id: int = 0
         self.item_protection_index: int = 0
@@ -261,7 +255,7 @@ class ItemInfoEntryBox(FullBox):
                 pos += 2
                 self.item_protection_index = struct.unpack('>H', stream[pos:pos+2])[0]
                 pos += 2
-                self.item_type = "" 
+                self.item_type = ""
                 name_end = stream.find(b'\x00', pos)
                 if name_end == -1: name_end = len(stream)
                 self.item_name = stream[pos:name_end].decode('utf-8', errors='ignore')
@@ -290,26 +284,26 @@ class ItemInfoEntryBox(FullBox):
                     candidate_type = stream[pos+2:pos+6]
 
                     if candidate_protection <= 0x00FF and b'\x00' not in candidate_type:
-                        # 标准顺序: 2 字节保护索引 + 4 字节类型
+                        # Standard ordering: 2-byte protection index followed by the 4CC.
                         self.item_protection_index = candidate_protection
                         self._has_protection_field = True
                         pos += 2
                         type_bytes = candidate_type
                         pos += 4
                     else:
-                        # 三星文件: 直接写入类型 (如 'hvc1')，缺少保护索引
+                        # Samsung files often omit the protection index and write only the 4CC.
                         self.item_protection_index = 0
                         self._has_protection_field = False
                         type_bytes = stream[pos:pos+4]
                         pos += 4
                 elif remaining >= 4:
-                    # 某些三星文件缺少 2 字节的保护索引字段, 直接紧跟 4 字节类型
+                    # Some vendor variants omit the 2-byte protection field entirely.
                     self.item_protection_index = 0
                     self._has_protection_field = False
                     type_bytes = stream[pos:pos+4]
                     pos += 4
                 else:
-                    # 无法获得完整的 4 字节类型
+                    # Truncated data: fall back to an empty type.
                     type_bytes = b''
 
                 self.item_type = type_bytes.decode('ascii', errors='ignore').strip('\x00')
@@ -376,7 +370,7 @@ class ItemInfoEntryBox(FullBox):
             content.write(struct.pack('>I', self.item_id))
             if self._has_protection_field:
                 content.write(struct.pack('>H', self.item_protection_index))
-            # item_type 必须是 4 字节的 4CC，若不足则以 NUL 填充
+            # Item types must be a 4CC; pad with NUL bytes when necessary.
             content.write(self.item_type.encode('ascii', errors='ignore')[:4].ljust(4, b'\x00'))
             content.write(item_name_bytes_to_write)
             if self.content_type is not None:
@@ -396,8 +390,7 @@ class ItemInfoEntryBox(FullBox):
             
         return content.getvalue()
 
-# --- ItemInfoBox ---
-# ('iinf')
+# ItemInfoBox (`iinf`) -----------------------------------------------------
 class ItemInfoBox(FullBox):
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         self.entries: list[ItemInfoEntry] = []
@@ -433,16 +426,12 @@ class ItemInfoBox(FullBox):
         else: 
             header.write(struct.pack('>I', len(infe_children)))
             
-        # --- START FIX 2 ---
-        # 之前是: children_data = super().build_content()
-        # 我们需要调用 Box.build_content (祖父级)
+        # Call the grandparent implementation so nested boxes rebuild correctly.
         children_data = super(FullBox, self).build_content()
-        # --- END FIX 2 ---
         
         return header.getvalue() + children_data
 
-# --- PrimaryItemBox ---
-# ('pitm')
+# PrimaryItemBox (`pitm`) --------------------------------------------------
 class PrimaryItemBox(FullBox):
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         self.item_id: int = 0
@@ -469,8 +458,7 @@ class PrimaryItemBox(FullBox):
             content.write(struct.pack('>I', self.item_id))
         return content.getvalue()
 
-# --- ImageSpatialExtentsBox ---
-# ('ispe')
+# ImageSpatialExtentsBox (`ispe`) -----------------------------------------
 class ImageSpatialExtentsBox(FullBox):
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         self.image_width: int = 0
@@ -496,7 +484,7 @@ class ImageSpatialExtentsBox(FullBox):
         content.write(struct.pack('>I', self.image_height))
         return content.getvalue()
 
-# --- ItemPropertyAssociationEntry (DataClass) ---
+# ItemPropertyAssociationEntry ---------------------------------------------
 class ItemPropertyAssociation:
     def __init__(self, property_index: int, essential: bool):
         self.property_index = property_index
@@ -517,8 +505,7 @@ class ItemPropertyAssociationEntry:
         return (f"<ItemPropertyAssociationEntry item_id={self.item_id} "
                 f"associations={[repr(a) for a in self.associations]}>")
 
-# --- ItemPropertyAssociationBox ---
-# ('ipma')
+# ItemPropertyAssociationBox (`ipma`) -------------------------------------
 class ItemPropertyAssociationBox(FullBox):
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         self.entries: dict[int, ItemPropertyAssociationEntry] = {}
@@ -587,14 +574,12 @@ class ItemPropertyAssociationBox(FullBox):
                 
         return content.getvalue()
 
-# --- ItemPropertyContainerBox ---
-# ('ipco')
+# ItemPropertyContainerBox (`ipco`) ---------------------------------------
 class ItemPropertyContainerBox(Box):
     def _post_parse_initialization(self):
         pass 
 
-# --- ItemPropertiesBox ---
-# ('iprp')
+# ItemPropertiesBox (`iprp`) ----------------------------------------------
 class ItemPropertiesBox(Box):
     def _post_parse_initialization(self):
         pass 
@@ -610,7 +595,7 @@ class ItemPropertiesBox(Box):
             if isinstance(child, ItemPropertyAssociationBox): return child
         return None
 
-# --- ItemReferenceEntry (DataClass) ---
+# ItemReferenceEntry -------------------------------------------------------
 class ItemReferenceEntry:
     def __init__(self, from_id, to_ids):
         self.from_item_id = from_id
@@ -618,8 +603,7 @@ class ItemReferenceEntry:
     def __repr__(self):
         return f"<ItemReferenceEntry from={self.from_item_id} to={self.to_item_ids}>"
 
-# --- ItemReferenceBox ---
-# ('iref')
+# ItemReferenceBox (`iref`) ------------------------------------------------
 class ItemReferenceBox(FullBox):
     def __init__(self, size: int, box_type: str, offset: int, raw_data: bytes):
         self.references: dict[str, dict[int, list[int]]] = {}
@@ -674,10 +658,7 @@ class ItemReferenceBox(FullBox):
         header = BytesIO()
         header.write(self.build_full_box_header())
         
-        # --- START FIX 2 ---
-        # 之前是: children_data = super().build_content()
-        # 我们需要调用 Box.build_content (祖父级)
+        # Preserve nested reference payloads by delegating to Box.build_content.
         children_data = super(FullBox, self).build_content()
-        # --- END FIX 2 ---
         
         return header.getvalue() + children_data
