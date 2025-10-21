@@ -25,6 +25,7 @@
 | 组件 | 作用 |
 | --- | --- |
 | `scripts/samsung_live_photo.py` | 命令行转换脚本，输出苹果兼容的 HEIC + MOV |
+| `scripts/batch_media_manager.py` | 图形化批处理工具：扫描目录、转换 Motion Photo、匹配 Live Photo 配对、清理由 MotionPhoto_Data 标记的冗余视频，并可归档原始素材 |
 | `pyheic_struct.HEICFile` | 解析 HEIC 盒结构、重建主图、提取 Motion Photo 等 |
 | `pyheic_struct.HEICBuilder` | 在修改元数据后重新写出 HEIC，确保偏移正确 |
 | `pyheic_struct.convert_motion_photo` | 通用转换入口，可指定厂商与目标适配器 |
@@ -103,6 +104,25 @@ heic_path, mov_path = convert_samsung_motion_photo(
 rebuilt = HEICFile(str(heic_path))
 rebuilt.set_content_identifier("MY-INTERNAL-ID")
 HEICBuilder(rebuilt).write("converted/customized.HEIC")
+```
+
+---
+
+### 4. 图形化批处理工具（GUI）
+
+`scripts/batch_media_manager.py` 提供完整的桌面界面，便于批量巡检目录：
+
+- 递归扫描 HEIC/MOV/MP4 等媒体，并以进度条与日志反馈处理情况；
+- 检测 Live Photo 配对，自动移动缺失伴侣的孤立视频到安全子目录；
+- 将三星 Motion Photo 转换为 Apple 兼容的 HEIC + MOV，并补写 `ContentIdentifier`；
+- 清理带 `MotionPhoto_Data` 标签、与 Motion Photo 重复的冗余 MP4；
+- 可选地把成功转换的原始素材按照原路径层级移动到 `归档/`（或 `Archive/`）并打包 zip；
+- 内置“停止”按钮和窗口关闭钩子，可安全取消长时间任务。
+
+运行示例：
+
+```bash
+python3 scripts/batch_media_manager.py
 ```
 
 ---

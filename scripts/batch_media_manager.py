@@ -5,13 +5,14 @@ GUI batch utility for inspecting Live Photo / Motion Photo media trees.
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import shutil
 import subprocess
 import threading
 import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
@@ -20,10 +21,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 # 假设 pyheic_struct 在你的 Python 路径中
-# from pyheic_struct import AppleTargetAdapter, HEICFile, convert_motion_photo
-'''
-# --- Mocking pyheic_struct for testing if not installed ---
-# 如果你没有安装 pyheic_struct，请取消注释下面的部分来模拟它
 try:
     from pyheic_struct import AppleTargetAdapter, HEICFile, convert_motion_photo
 except ImportError:
@@ -48,7 +45,6 @@ except ImportError:
     AppleTargetAdapter = MockAppleTargetAdapter
     convert_motion_photo = mock_convert_motion_photo
 # --- End of Mocking ---
-'''
 
 STILL_SUFFIXES = {".heic", ".heif"}
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".qt", ".3gp"}
@@ -87,6 +83,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "log_archiving": "正在归档原始照片...",
         "log_archive_complete": "归档完成: {zip_path}",
         "log_archive_failed": "归档失败: {error}",
+        "log_archived_path": "已归档: {src} -> {dest}",
+        "log_cancel_requested": "已请求中止，正在等待正在运行的任务完成…",
+        "log_cancelled": "处理已中止。",
+        "archive_dir_name": "归档",
         "task_orphan_video": "孤立视频: {path}", # (此翻译保留，但逻辑已更改)
         "task_motion_convert": "Motion Photo 转 Live Photo: {path}",
         "task_cleanup_mp4": "清理 MP4: {path}", # (此翻译保留，但逻辑已更改)
@@ -98,7 +98,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "result_cleanup_kept": "保留 (非目标视频)", # 修改
         "result_cleanup_skipped": "跳过 (缺少 exiftool)",
         "result_failed": "失败: {error}",
+        "result_cancelled": "已取消",
         "result_archived": "已归档原始文件",
+        "button_stop": "停止",
     },
     "en": {
         "app_title": "Live / Motion Photo Batch Manager",
@@ -133,6 +135,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "log_archiving": "Archiving original photos...",
         "log_archive_complete": "Archive complete: {zip_path}",
         "log_archive_failed": "Archive failed: {error}",
+        "log_archived_path": "Archived: {src} -> {dest}",
+        "log_cancel_requested": "Cancellation requested. Waiting for running tasks…",
+        "log_cancelled": "Processing cancelled.",
+        "archive_dir_name": "Archive",
         "task_orphan_video": "Orphan video: {path}", # (Retained, logic changed)
         "task_motion_convert": "Motion Photo → Live Photo: {path}",
         "task_cleanup_mp4": "Cleanup MP4: {path}", # (Retained, logic changed)
@@ -144,7 +150,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "result_cleanup_kept": "Kept (Not a target video)", # Modified
         "result_cleanup_skipped": "Skipped (exiftool unavailable)",
         "result_failed": "Failed: {error}",
+        "result_cancelled": "Cancelled",
         "result_archived": "Archived original file",
+        "button_stop": "Stop",
     },
 }
 
@@ -157,6 +165,7 @@ class ProcessingOptions:
     remove_motion_mp4: bool
     archive_originals: bool
     max_workers: int
+    stop_event: threading.Event
 
 
 @dataclass
@@ -188,7 +197,15 @@ def _move_orphan_video(mov_path: Path, root_dir: Path, tr: Callable[[str], str])
     return {"status": "MOVED", "message": tr("result_moved", dest=str(destination))}
 
 
-def _convert_motion_photo(heic_path: Path, inject_mov_tag: bool, tr: Callable[[str], str]) -> dict:
+def _convert_motion_photo(
+    heic_path: Path,
+    inject_mov_tag: bool,
+    options: ProcessingOptions,
+    tr: Callable[[str], str],
+) -> dict:
+    if options.stop_event.is_set():
+        return {"status": "CANCELLED", "message": tr("result_cancelled")}
+
     output_still = heic_path.with_name(f"{heic_path.stem}_apple_compatible.HEIC")
     output_video = heic_path.with_name(f"{heic_path.stem}_apple_compatible.MOV")
 
@@ -221,7 +238,10 @@ def _process_video(
     根据元数据和用户选项处理单个视频文件（MP4, MOV 等）。
     实现新的优先级逻辑。
     """
-    
+
+    if options.stop_event.is_set():
+        return {"status": "CANCELLED", "message": tr("result_cancelled")}
+
     # 如果两个选项都没选，或者没有 exiftool，我们只能执行旧的“孤立”逻辑
     if not has_exiftool:
         if options.handle_live_pairs and not has_still_pair:
@@ -236,18 +256,41 @@ def _process_video(
     try:
         cmd = [
             "exiftool",
-            "-s",
-            "-s",
-            "-s",
+            "-j",
             "-EmbeddedVideoType",
             "-ContentIdentifier",
             str(video_path),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         output = result.stdout.strip()
+        if result.returncode != 0 and not output:
+            raise RuntimeError(result.stderr.strip() or "exiftool invocation failed")
+
+        metadata: Dict[str, str] = {}
+        if output:
+            try:
+                data = json.loads(output)
+                if isinstance(data, list) and data:
+                    first_record = data[0]
+                    if isinstance(first_record, dict):
+                        metadata = {
+                            str(k): str(v).strip() if isinstance(v, str) else str(v)
+                            for k, v in first_record.items()
+                        }
+            except json.JSONDecodeError:
+                for line in output.splitlines():
+                    if ":" not in line:
+                        continue
+                    key, value = line.split(":", 1)
+                    metadata[key.strip()] = value.strip()
+        if not metadata:
+            metadata = {}
         
-        has_motion_data = "MotionPhoto_Data" in output
-        has_content_id = "ContentIdentifier" in output # 注意：exiftool 找到标签就会返回 True
+        embedded_type = str(metadata.get("EmbeddedVideoType", ""))
+        content_identifier = str(metadata.get("ContentIdentifier", "")).strip()
+
+        has_motion_data = "MotionPhoto_Data" in embedded_type
+        has_content_id = bool(content_identifier)
 
         # 优先级 1：检查是否为多余的 MotionPhoto_Data (如果选项开启)
         if options.remove_motion_mp4 and has_motion_data:
@@ -283,6 +326,8 @@ def _gather_tasks(
 
     log(tr("log_scanning"))
     for path in options.root_dir.rglob("*"):
+        if options.stop_event.is_set():
+            break
         if not path.is_file():
             continue
         suffix = path.suffix.lower()
@@ -302,6 +347,8 @@ def _gather_tasks(
     if options.convert_motion:
         inject_mov_tag = has_exiftool
         for heic_path in heic_files:
+            if options.stop_event.is_set():
+                break
             key = (heic_path.parent, heic_path.stem.lower())
             entry = base_map.get(key, {})
             videos = entry.get("videos") or []
@@ -312,7 +359,9 @@ def _gather_tasks(
                 continue
             tasks.append(
                 Task(
-                    func=lambda p=heic_path, tr=tr: _convert_motion_photo(p, inject_mov_tag, tr),
+                    func=lambda p=heic_path, tr=tr: _convert_motion_photo(
+                        p, inject_mov_tag, options, tr
+                    ),
                     description=tr("task_motion_convert", path=str(heic_path)),
                 )
             )
@@ -320,6 +369,8 @@ def _gather_tasks(
     # 2. (新增) 统一的视频处理任务 (替代旧的 MP4 清理和孤立视频移动)
     if options.handle_live_pairs or options.remove_motion_mp4:
         for video_path in all_video_files:
+            if options.stop_event.is_set():
+                break
             key = (video_path.parent, video_path.stem.lower())
             has_still = "still" in base_map.get(key, {})
             
@@ -367,6 +418,7 @@ def _worker(options: ProcessingOptions, message_queue: queue.Queue, language: st
         emit_log(tr("log_executing", total=total, workers=max_workers))
 
         completed = 0
+        cancelled = False
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {executor.submit(task.func): task for task in tasks}
             for future in as_completed(future_map):
@@ -383,42 +435,62 @@ def _worker(options: ProcessingOptions, message_queue: queue.Queue, language: st
                         files_to_archive.append(outcome["original_path"])
                         result_text += f" ({tr('result_archived')})"
 
+                except CancelledError:
+                    result_text = tr("result_cancelled")
+                    cancelled = True
                 except Exception as exc:
                     result_text = tr("result_failed", error=exc)
                 emit_log(tr("log_task_entry", task=task.description, result=result_text))
                 completed += 1
                 message_queue.put(("progress", completed))
 
-        if options.archive_originals and files_to_archive:
-            emit_log(tr("log_archiving"))
-            archive_dir_name = "三星原始照片"
-            archive_base_dir = options.root_dir / archive_dir_name
-            
-            try:
-                for original_path in files_to_archive:
-                    relative_path = original_path.relative_to(options.root_dir)
-                    archive_dest = archive_base_dir / relative_path
-                    archive_dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(original_path), str(archive_dest))
+                if options.stop_event.is_set():
+                    cancelled = True
+                    for pending_future in future_map:
+                        if not pending_future.done():
+                            pending_future.cancel()
+                    break
 
-                datestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                zip_name_base = f"{archive_dir_name}_{datestamp}"
+        if cancelled or options.stop_event.is_set():
+            emit_log(tr("log_cancelled"))
+        else:
+            if options.archive_originals and files_to_archive:
+                emit_log(tr("log_archiving"))
+                archive_dir_name = tr("archive_dir_name")
+                archive_base_dir = options.root_dir / archive_dir_name
                 
-                zip_path_str = shutil.make_archive(
-                    base_name=str(options.root_dir / zip_name_base),
-                    format="zip",
-                    root_dir=options.root_dir,
-                    base_dir=archive_dir_name,
-                )
-                
-                # shutil.rmtree(archive_base_dir) # 归档后删除原文件夹
+                try:
+                    for original_path in files_to_archive:
+                        relative_path = original_path.relative_to(options.root_dir)
+                        archive_dest = archive_base_dir / relative_path
+                        archive_dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(original_path), str(archive_dest))
+                        emit_log(
+                            tr(
+                                "log_archived_path",
+                                src=str(relative_path),
+                                dest=str(archive_dest.relative_to(options.root_dir)),
+                            )
+                        )
 
-                emit_log(tr("log_archive_complete", zip_path=Path(zip_path_str).name))
+                    datestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    zip_name_base = f"{archive_dir_name}_{datestamp}"
+                    
+                    zip_path_str = shutil.make_archive(
+                        base_name=str(options.root_dir / zip_name_base),
+                        format="zip",
+                        root_dir=options.root_dir,
+                        base_dir=archive_dir_name,
+                    )
+                    
+                    # shutil.rmtree(archive_base_dir) # 归档后删除原文件夹
 
-            except Exception as e:
-                emit_log(tr("log_archive_failed", error=e))
+                    emit_log(tr("log_archive_complete", zip_path=Path(zip_path_str).name))
 
-        emit_log(tr("log_finished"))
+                except Exception as e:
+                    emit_log(tr("log_archive_failed", error=e))
+
+            emit_log(tr("log_finished"))
     except Exception as e:
         emit_log(tr("result_failed", error=e))
     finally:
@@ -431,11 +503,13 @@ class BatchManagerGUI:
         self.root = tk.Tk()
         # 标题与所有文案通过 _update_ui_text 统一设置
         self.root.geometry("780x520")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.lang = tk.StringVar(value="zh")
 
         self.queue: queue.Queue = queue.Queue()
         self.worker_thread: threading.Thread | None = None
+        self.stop_event = threading.Event()
 
         self.path_var = tk.StringVar()
         self.handle_live_var = tk.BooleanVar(value=True)
@@ -459,6 +533,7 @@ class BatchManagerGUI:
         self.label_workers = None
         self.worker_spin = None
         self.start_button = None
+        self.stop_button = None
         self.progress_bar = None
         self.progress_label = None
         self.log_frame = None
@@ -574,6 +649,9 @@ class BatchManagerGUI:
         control_frame.pack(fill="x", **padding)
         self.start_button = ttk.Button(control_frame, text=self._t("button_start"), command=self._start_processing)
         self.start_button.pack(side="left")
+        self.stop_button = ttk.Button(control_frame, text=self._t("button_stop"), command=self._stop_processing)
+        self.stop_button.pack(side="left", padx=(8, 0))
+        self.stop_button.config(state="disabled")
 
         self.progress_bar = ttk.Progressbar(self.root, mode="determinate")
         self.progress_bar.pack(fill="x", padx=10, pady=(4, 0))
@@ -622,6 +700,8 @@ class BatchManagerGUI:
             self.label_workers.config(text=self._t("label_workers"))
         if self.start_button is not None:
             self.start_button.config(text=self._t("button_start"))
+        if self.stop_button is not None:
+            self.stop_button.config(text=self._t("button_stop"))
 
         # 进度文本
         if self.progress_label is not None:
@@ -648,6 +728,8 @@ class BatchManagerGUI:
             messagebox.showerror(self._t("error_invalid_dir_title"), self._t("error_invalid_dir_body"))
             return
 
+        self.stop_event.clear()
+
         options = ProcessingOptions(
             root_dir=directory,
             handle_live_pairs=self.handle_live_var.get(),
@@ -655,11 +737,14 @@ class BatchManagerGUI:
             remove_motion_mp4=self.remove_mp4_var.get(),
             archive_originals=self.archive_originals_var.get(),
             max_workers=self.worker_count_var.get(),
+            stop_event=self.stop_event,
         )
 
         self._reset_progress()
         self.start_button.config(state="disabled")
         self.worker_spin.config(state="disabled")
+        if self.stop_button is not None:
+            self.stop_button.config(state="normal")
 
         self.worker_thread = threading.Thread(
             target=_worker,
@@ -668,6 +753,15 @@ class BatchManagerGUI:
         )
         self.worker_thread.start()
 
+    def _stop_processing(self) -> None:
+        if not (self.worker_thread and self.worker_thread.is_alive()):
+            return
+        if not self.stop_event.is_set():
+            self.stop_event.set()
+            self.queue.put(("log", self._t("log_cancel_requested")))
+        if self.stop_button is not None:
+            self.stop_button.config(state="disabled")
+
     def _reset_progress(self) -> None:
         self.progress_total = 0
         self.progress_done = 0
@@ -675,6 +769,8 @@ class BatchManagerGUI:
         self.progress_bar["maximum"] = 1
         self.progress_label.config(text=self._t("progress_status").format(done=0, total=0))
         self.log_text.delete("1.0", tk.END)
+        if self.stop_button is not None:
+            self.stop_button.config(state="disabled")
 
     def _poll_queue(self) -> None:
         try:
@@ -706,8 +802,24 @@ class BatchManagerGUI:
         elif kind == "finished":
             self.start_button.config(state="normal")
             self.worker_spin.config(state="normal")
+            if self.stop_button is not None:
+                self.stop_button.config(state="disabled")
+            self.stop_event.clear()
             self.log_text.insert(tk.END, self._t("log_processing_done") + "\n")
             self.log_text.see(tk.END)
+
+    def _on_close(self) -> None:
+        if self.worker_thread and self.worker_thread.is_alive():
+            self._stop_processing()
+            self.root.after(100, self._wait_for_worker_and_close)
+        else:
+            self.root.destroy()
+
+    def _wait_for_worker_and_close(self) -> None:
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.root.after(100, self._wait_for_worker_and_close)
+        else:
+            self.root.destroy()
 
 
 def main() -> None:
