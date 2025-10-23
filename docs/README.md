@@ -1,17 +1,3 @@
-Metadata-Version: 2.4
-Name: pyheic-struct
-Version: 0.1.0
-Summary: Low-level utilities for parsing and rebuilding HEIC/HEIF files, with Samsung-to-Apple motion photo conversion helpers.
-Author-email: Nymiro Yi <dmwf994@dmwf994.com>
-License: MIT
-Requires-Python: >=3.10
-Description-Content-Type: text/markdown
-Requires-Dist: Pillow>=10.0.0
-Requires-Dist: pillow-heif>=0.15.0
-Requires-Dist: piexif>=1.1.3
-Provides-Extra: full
-Requires-Dist: exiftool-wrapper>=0.5.0; extra == "full"
-
 # pyheic-struct
 
 `pyheic-struct` 诞生的初衷，是为了解决我个人在迁移照片时遇到的需求：把三星手机拍摄的动态照片（Motion Photo）批量转换成 iOS/macOS 可以直接识别、导入的 Live Photo。  

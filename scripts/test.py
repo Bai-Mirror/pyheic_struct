@@ -1,4 +1,9 @@
 import os
+from pathlib import Path
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_EXAMPLE = ROOT_DIR / "examples" / "samsung_apple_compatible.HEIC"
 
 # --- Hex Dump Utility ---
 def hexdump(data, length=16):
@@ -22,11 +27,11 @@ def hexdump(data, length=16):
 # --- End Utility ---
 
 
-filename = 'samsung_apple_compatible.HEIC'
+filename = os.environ.get("HEIC_SAMPLE", str(DEFAULT_EXAMPLE))
 
 if not os.path.exists(filename):
     print(f"Error: File not found: {filename}")
-    print("Please make sure you are running this in the same directory as the generated file.")
+    print("Set HEIC_SAMPLE environment variable or place the sample under examples/.")
 else:
     try:
         with open(filename, 'rb') as f:

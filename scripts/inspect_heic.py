@@ -105,7 +105,7 @@ def inspect_file(filename: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法: python inspect_heic.py <文件名>")
-        print("例如: python inspect_heic.py samsung.heic")
+        print("用法: python scripts/inspect_heic.py <文件名>")
+        print("例如: python scripts/inspect_heic.py examples/samsung.heic")
     else:
         inspect_file(sys.argv[1])

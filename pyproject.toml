@@ -6,7 +6,7 @@ authors = [
     { name = "Nymiro Yi", email = "dmwf994@dmwf994.com" }
 ]
 license = { text = "MIT" }
-readme = "README.md"
+readme = "docs/README.md"
 requires-python = ">=3.10"
 dependencies = [
     "Pillow>=10.0.0",

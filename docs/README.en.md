@@ -42,7 +42,7 @@ pip install -e .[full]
 ### CLI conversion
 
 ```bash
-python3 scripts/samsung_live_photo.py samsung.heic --output-dir output/live
+python3 scripts/samsung_to_live_photo.py examples/samsung.heic --output-dir output/live
 ```
 
 The command writes `samsung_apple_compatible.heic` and `samsung_apple_compatible.mov` with the same UUIDs.
@@ -62,7 +62,7 @@ from pathlib import Path
 from pyheic_struct import convert_samsung_motion_photo, HEICFile, HEICBuilder
 
 heic_path, mov_path = convert_samsung_motion_photo(
-    "samsung.heic",
+    "examples/samsung.heic",
     output_still=Path("converted/apple_ready.HEIC"),
     output_video=Path("converted/apple_ready.MOV"),
 )

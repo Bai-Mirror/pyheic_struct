@@ -1,5 +1,6 @@
 README.md
 pyproject.toml
+docs/README.md
 pyheic_struct/__init__.py
 pyheic_struct/__main__.py
 pyheic_struct/base.py
