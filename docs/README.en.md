@@ -37,6 +37,30 @@ pip install -e .[full]
 
 ---
 
+### Windows & macOS standalone binaries
+
+Need an executable without Python? Trigger the **Build Samsung Live Photo binaries** workflow in GitHub Actions (or wait for an automatic run) and download the `SamsungToLivePhoto-windows` / `SamsungToLivePhoto-macos` artifacts. Each archive ships with a short README that mirrors `packaging/README_windows.txt` and `packaging/README_macos.txt`.
+
+To build locally on the target OS:
+
+```bash
+# Windows (PowerShell)
+python -m pip install ".[full]" pyinstaller
+pyinstaller --noconfirm --onefile --name SamsungToLivePhoto `
+  --collect-all pillow_heif --collect-all pyheic_struct `
+  scripts/samsung_to_live_photo.py
+
+# macOS (bash/zsh)
+python3 -m pip install ".[full]" pyinstaller
+pyinstaller --noconfirm --onefile --name SamsungToLivePhoto \
+  --collect-all pillow_heif --collect-all pyheic_struct \
+  scripts/samsung_to_live_photo.py
+```
+
+The resulting executables live under `dist/`: `SamsungToLivePhoto.exe` on Windows and `SamsungToLivePhoto` on macOS.
+
+---
+
 ## Quick Start
 
 ### CLI conversion

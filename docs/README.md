@@ -60,6 +60,33 @@ pip install -e .[full]
 
 ---
 
+### Windows/macOS 一键可执行程序
+
+如果希望直接在 Windows 或 macOS 上使用单独的可执行文件，可以：
+
+- 在 GitHub Actions 中运行 **Build Samsung Live Photo binaries** 工作流（或等待自动触发），在构建完成后下载 `SamsungToLivePhoto-windows` / `SamsungToLivePhoto-macos` 构件；
+- 解压后按照压缩包内的 `README.txt` 操作即可（文件位于仓库的 `packaging/README_windows.txt` 与 `packaging/README_macos.txt`）。
+
+若想自行本地打包，可在目标系统直接执行：
+
+```bash
+# Windows (PowerShell)
+python -m pip install ".[full]" pyinstaller
+pyinstaller --noconfirm --onefile --name SamsungToLivePhoto `
+  --collect-all pillow_heif --collect-all pyheic_struct `
+  scripts/samsung_to_live_photo.py
+
+# macOS (bash/zsh)
+python3 -m pip install ".[full]" pyinstaller
+pyinstaller --noconfirm --onefile --name SamsungToLivePhoto \
+  --collect-all pillow_heif --collect-all pyheic_struct \
+  scripts/samsung_to_live_photo.py
+```
+
+打包完成后，可执行文件会出现在 `dist/` 目录。Windows 版本为 `SamsungToLivePhoto.exe`，macOS 版本为 `SamsungToLivePhoto`。
+
+---
+
 ## 快速开始：把三星动态照片变成 Live Photo
 
 ### 1. 准备样例

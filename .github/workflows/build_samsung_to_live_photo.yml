@@ -1,0 +1,82 @@
+name: Build Samsung Live Photo binaries
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/samsung_to_live_photo.py"
+      - "packaging/**"
+      - ".github/workflows/build_samsung_to_live_photo.yml"
+      - "pyproject.toml"
+
+jobs:
+  build-windows:
+    name: Windows executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[full]" pyinstaller
+
+      - name: Build Windows binary
+        run: |
+          pyinstaller --noconfirm --onefile --name SamsungToLivePhoto --collect-all pillow_heif --collect-all pyheic_struct scripts/samsung_to_live_photo.py
+
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path packaged | Out-Null
+          Copy-Item -Path dist/SamsungToLivePhoto.exe -Destination packaged/
+          Copy-Item -Path packaging/README_windows.txt -Destination packaged/README.txt
+          Compress-Archive -Path packaged/* -DestinationPath SamsungToLivePhoto-win.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SamsungToLivePhoto-windows
+          path: SamsungToLivePhoto-win.zip
+
+  build-macos:
+    name: macOS executable
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install ".[full]" pyinstaller
+
+      - name: Build macOS binary
+        run: |
+          pyinstaller --noconfirm --onefile --name SamsungToLivePhoto --collect-all pillow_heif --collect-all pyheic_struct scripts/samsung_to_live_photo.py
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p packaged
+          cp dist/SamsungToLivePhoto packaged/SamsungToLivePhoto
+          cp packaging/README_macos.txt packaged/README.txt
+          tar -czf SamsungToLivePhoto-macos.tar.gz -C packaged .
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SamsungToLivePhoto-macos
+          path: SamsungToLivePhoto-macos.tar.gz

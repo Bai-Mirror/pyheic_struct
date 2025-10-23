@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 full = [
-    "exiftool-wrapper>=0.5.0",
+    "exiftool-wrapper>=0.3.0",
 ]
 
 [project.scripts]
