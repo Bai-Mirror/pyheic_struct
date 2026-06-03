@@ -619,7 +619,7 @@ class ItemReferenceBox(FullBox):
             ref_box_type = ref_box.type
             self.references[ref_box_type] = {}
             
-            stream = ref_box.raw_data[4:] 
+            stream = ref_box.raw_data
             pos = 0
             
             if pos + item_id_size > len(stream):

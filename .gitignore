@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+temp_libs/
+test_output/
+*.jpg
+*.txt
+dist/
+*.egg-info/

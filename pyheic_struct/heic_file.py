@@ -607,24 +607,23 @@ class HEICFile:
             print("Info: No 'thmb' references found in 'iref' box.")
             return None
         
-        target_id = primary_id
-        if primary_id not in self._iref_box.references['thmb']:
-            shifted_primary_id = primary_id << 16
-            if shifted_primary_id not in self._iref_box.references['thmb']:
-                print(f"Info: Primary item ID {primary_id} (or shifted) has no 'thmb' reference.")
-                return None
+        # Search all 'thmb' references to find which item points TO our primary_id.
+        thumbnail_id = None
+        for from_id, to_ids in self._iref_box.references['thmb'].items():
+            if primary_id in to_ids:
+                thumbnail_id = from_id
+                break
             
-            print("Info: Using shifted primary ID to find thumbnail.")
-            target_id = shifted_primary_id
-
-
-        thumbnail_ids = self._iref_box.references['thmb'][target_id]
-        if not thumbnail_ids:
-            print(f"Info: Primary item ID {target_id} has 'thmb' reference, but no target IDs.")
+            # Also check shifted variant of primary_id
+            if (primary_id << 16) in to_ids:
+                 thumbnail_id = from_id
+                 break
+        
+        if thumbnail_id is None:
+            print(f"Info: No 'thmb' reference points to primary item ID {primary_id}.")
             return None
 
-        thumbnail_id = thumbnail_ids[0]
-        print(f"Found thumbnail reference: Primary ID {target_id} -> Thumbnail ID {thumbnail_id}")
+        print(f"Found thumbnail reference: Thumbnail ID {thumbnail_id} -> Primary ID {primary_id}")
         
         thumbnail_data = self.get_item_data(thumbnail_id)
         
