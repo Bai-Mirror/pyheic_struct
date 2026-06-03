@@ -155,8 +155,8 @@ class HEICFile:
             for i in range(len(self._iref_box.children) - 1, -1, -1):
                 ref_box = self._iref_box.children[i]
                 from_id_size = 4 if self._iref_box.version == 1 else 2
-                if len(ref_box.raw_data) >= 4 + from_id_size:
-                    from_id = _read_int(ref_box.raw_data, 4, from_id_size)
+                if len(ref_box.raw_data) >= from_id_size:
+                    from_id = _read_int(ref_box.raw_data, 0, from_id_size)
                     if from_id == item_id_to_remove:
                         self._iref_box.children.pop(i)
                         print(f"  - Removed 'iref' child box (type '{ref_box.type}') with from_id {from_id}.")
@@ -498,14 +498,15 @@ class HEICFile:
         if not primary_id: return None
         if not self._iref_box: return None
         
-        if 'dimg' in self._iref_box.references and primary_id in self._iref_box.references['dimg']:
-            return self._iref_box.references['dimg'].get(primary_id)
-        
+        dimg_refs = self._iref_box.references.get('dimg')
+        if dimg_refs and primary_id in dimg_refs:
+            return dimg_refs[primary_id]
+
         # Fall back to Samsung-style shifted IDs.
         shifted_id = primary_id << 16
-        if 'dimg' in self._iref_box.references and shifted_id in self._iref_box.references['dimg']:
+        if dimg_refs and shifted_id in dimg_refs:
              print("Info: Using shifted primary ID to find grid layout.")
-             return self._iref_box.references['dimg'].get(shifted_id)
+             return dimg_refs[shifted_id]
              
         return None
 
@@ -610,14 +611,9 @@ class HEICFile:
         # Search all 'thmb' references to find which item points TO our primary_id.
         thumbnail_id = None
         for from_id, to_ids in self._iref_box.references['thmb'].items():
-            if primary_id in to_ids:
+            if primary_id in to_ids or (primary_id << 16) in to_ids:
                 thumbnail_id = from_id
                 break
-            
-            # Also check shifted variant of primary_id
-            if (primary_id << 16) in to_ids:
-                 thumbnail_id = from_id
-                 break
         
         if thumbnail_id is None:
             print(f"Info: No 'thmb' reference points to primary item ID {primary_id}.")

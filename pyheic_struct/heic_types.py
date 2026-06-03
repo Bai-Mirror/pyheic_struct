@@ -617,7 +617,7 @@ class ItemReferenceBox(FullBox):
 
         for ref_box in self.children:
             ref_box_type = ref_box.type
-            self.references[ref_box_type] = {}
+            self.references.setdefault(ref_box_type, {})
             
             stream = ref_box.raw_data
             pos = 0
